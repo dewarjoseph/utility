@@ -140,8 +140,8 @@ class MLEngine:
             
             model.fit(X, y)
             return model, float(scores.mean())
-        except ImportError:
-            log.debug("XGBoost not installed, skipping")
+        except Exception as e:
+            log.debug(f"XGBoost import or training failed: {e}")
             return None, -np.inf
     
     def train_lightgbm(
@@ -167,8 +167,8 @@ class MLEngine:
             
             model.fit(X, y)
             return model, float(scores.mean())
-        except ImportError:
-            log.debug("LightGBM not installed, skipping")
+        except Exception as e:
+            log.debug(f"LightGBM import or training failed: {e}")
             return None, -np.inf
     
     def auto_select_model(self, min_samples: int = 50) -> Optional[object]:
