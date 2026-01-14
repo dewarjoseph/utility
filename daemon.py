@@ -1,20 +1,35 @@
 import time
 import random
-from osm_loader import fetch_santa_cruz_data, parse_osm_data
-from grid_engine import GridEngine
-from analyzer import DecisionEngine
+import json
+import logging
+
+from core import GridEngine, DecisionEngine
+from loaders import OSMLoader, GISLoader, SocioeconomicLoader
 from data_sink import TrainingLogger
+
+# Configure logging - outputs to console
+logging.basicConfig(
+    level=logging.INFO,  # Change to DEBUG for more verbose output
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()  # Outputs to console/terminal
+    ]
+)
+log = logging.getLogger("daemon")
 
 # Center of Santa Cruz
 DAEMON_START_LAT = 36.974
 DAEMON_START_LON = -122.030
 
 def run_daemon():
-    print(">>> LAND UTILIZATION DAEMON ONLINE <<<")
-    print(">>> Listening for land data updates...")
+    log.info(">>> LAND UTILIZATION DAEMON ONLINE <<<")
+    log.info(">>> Listening for land data updates...")
     
-    logger = TrainingLogger()
+    training_logger = TrainingLogger()
     engine = DecisionEngine()
+    osm_loader = OSMLoader()
+    socio_loader = SocioeconomicLoader()
+    gis_loader = GISLoader()
     
     # Daemon Loop Configuration
     current_lat = DAEMON_START_LAT
@@ -31,7 +46,7 @@ def run_daemon():
             with open("daemon_status.json", "w") as f:
                 json.dump({"cycles": cycle_count, "running": True}, f)
             
-            print(f"\n[Cycle {cycle_count}] Scanning Sector: {current_lat:.4f}, {current_lon:.4f}")
+            log.info(f"[Cycle {cycle_count}] Scanning Sector: {current_lat:.4f}, {current_lon:.4f}")
             
             # 1. Ingest
             # In a real daemon, we might move the lat/lon to "crawl" the map
@@ -41,8 +56,7 @@ def run_daemon():
             scan_lat = current_lat + shift_lat
             scan_lon = current_lon + shift_lon
             
-            raw_data = fetch_santa_cruz_data(scan_lat, scan_lon, radius_meters=scan_radius_meters)
-            features = parse_osm_data(raw_data)
+            features = osm_loader.fetch_and_parse(scan_lat, scan_lon, radius_meters=scan_radius_meters)
             
             # 2. Grid Projection
             grid = GridEngine(scan_lat, scan_lon, width_cells=10, height_cells=5, cell_size_meters=100)
@@ -59,28 +73,26 @@ def run_daemon():
                 trace = result["trace"]
                 
                 # Log to Training Set
-                # We save the state of the quantum + the score the expert engine gave it
+                # Enrich with socioeconomic and GIS data
                 q_dict = q.__dict__
-                logger.log_sample(q_dict, score, trace)
+                enriched_dict = socio_loader.enrich_quantum(q_dict)
+                enriched_dict = gis_loader.enrich_quantum(enriched_dict)
+                training_logger.log_sample(enriched_dict, score, trace)
                 
                 if score > 5.0:
                     high_value_count += 1
             
-            print(f"   -> Processed {len(quanta_list)} Micro-Sectors.")
-            print(f"   -> Identified {high_value_count} High-Utility Targets.")
-            print("   -> Data logged to training_dataset.jsonl")
+            log.info(f"Processed {len(quanta_list)} Micro-Sectors.")
+            log.info(f"Identified {high_value_count} High-Utility Targets.")
+            log.debug("Data logged to training_dataset.jsonl")
             
             # 4. Wait
-            print("   [Sleeping 3s]...")
+            log.debug("Sleeping 3s...")
             time.sleep(3)
-            
-            # Stop after 3 cycles for the demo run
-            if cycle_count >= 3:
-                print("\n[STOP] Daemon demo limit reached.")
-                break
+                
                 
     except KeyboardInterrupt:
-        print("\n[STOP] Daemon shutting down.")
+        log.info("[STOP] Daemon shutting down.")
 
 if __name__ == "__main__":
     run_daemon()
