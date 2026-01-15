@@ -1,303 +1,286 @@
+"""
+Land Utility Engine - Main Application
+
+Multi-page Streamlit application for managing land utility analysis projects.
+"""
+
 import streamlit as st
-import pandas as pd
-import json
 import os
-import plotly.express as px
-import plotly.graph_objects as go
-from sklearn.decomposition import PCA
-import numpy as np
 import subprocess
-import time
-import logging
+from pathlib import Path
 
-# Configure logging - outputs to console where streamlit is running
-logging.basicConfig(
-    level=logging.INFO,  # Change to DEBUG for more verbose output
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# ═══════════════════════════════════════════════════════════════════════════
+# PAGE CONFIG
+# ═══════════════════════════════════════════════════════════════════════════
+st.set_page_config(
+    page_title="Land Utility Engine",
+    page_icon="🛰️",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
-logger = logging.getLogger("app")
 
-# Page Config
-st.set_page_config(page_title="Land Utility Engine | MVP", layout="wide", initial_sidebar_state="expanded")
+# Hide Streamlit chrome
+st.markdown("""
+<style>
+    #MainMenu, header, footer, .stDeployButton {visibility: hidden; display: none;}
+    .block-container { padding: 1rem 2rem; }
+</style>
+""", unsafe_allow_html=True)
 
-# Initialize session state for daemon control
-if 'daemon_process' not in st.session_state:
-    st.session_state.daemon_process = None
-if 'daemon_cycles' not in st.session_state:
-    st.session_state.daemon_cycles = 0
+# ═══════════════════════════════════════════════════════════════════════════
+# IMPORTS
+# ═══════════════════════════════════════════════════════════════════════════
+from core.project import ProjectManager, Project, ProjectStatus
+from core.job_queue import JobQueue, JobStatus
 
-# Check if daemon is running
-def is_daemon_running():
-    if st.session_state.daemon_process is not None:
-        poll = st.session_state.daemon_process.poll()
-        return poll is None
-    return False
+# Initialize managers
+pm = ProjectManager()
+queue = JobQueue()
 
-# Sidebar - Daemon Control
-with st.sidebar:
-    st.title("🎛️ Control Panel")
-    
-    st.subheader("Daemon Status")
-    daemon_running = is_daemon_running()
-    
-    if daemon_running:
-        st.success("🟢 RUNNING")
-        
-        if os.path.exists("daemon_status.json"):
-            try:
-                with open("daemon_status.json", "r") as f:
-                    status = json.load(f)
-                    st.session_state.daemon_cycles = status.get("cycles", 0)
-            except:
-                pass
-        
-        st.metric("Cycles Completed", st.session_state.daemon_cycles)
-        
-        if st.button("⏹️ Stop Daemon", type="primary"):
-            if st.session_state.daemon_process:
-                st.session_state.daemon_process.terminate()
-                st.session_state.daemon_process = None
-            st.rerun()
-    else:
-        st.error("🔴 STOPPED")
-        if st.button("▶️ Start Daemon", type="primary"):
-            st.session_state.daemon_process = subprocess.Popen(
-                ["python", "daemon.py"],
-                cwd=os.getcwd()
-            )
-            st.session_state.daemon_cycles = 0
-            time.sleep(1)
-            st.rerun()
-    
-    st.markdown("---")
-    st.subheader("Configuration")
-    auto_refresh = st.checkbox("Auto-refresh Dashboard", value=True)
-    if auto_refresh:
-        st.info("Dashboard refreshes every 5 seconds")
-    
-    st.markdown("---")
-    if st.button("🤖 Train ML Models"):
-        with st.spinner("Training models..."):
-            result = subprocess.run(["python", "train_models.py"], capture_output=True, text=True)
-            st.success("Training complete!")
+# ═══════════════════════════════════════════════════════════════════════════
+# SIDEBAR
+# ═══════════════════════════════════════════════════════════════════════════
+st.sidebar.title("🛰️ Land Utility Engine")
+st.sidebar.markdown("---")
 
-# Main Dashboard
-st.title("🌍 Land Utility Engine: Neural Inspector")
-st.markdown("### Automated Ground Truth Analysis for Investment & Conservation")
+# Worker status
+active_jobs = queue.get_active_jobs()
+if active_jobs:
+    st.sidebar.success(f"✅ {len(active_jobs)} active job(s)")
+else:
+    st.sidebar.info("💤 No active jobs")
 
-# Auto-refresh logic
-if auto_refresh and daemon_running:
-    time.sleep(5)
+# Quick stats
+stats = queue.get_queue_stats()
+all_projects = pm.list_projects()
+st.sidebar.metric("Projects", len(all_projects))
+
+st.sidebar.markdown("---")
+
+# Worker control
+if st.sidebar.button("🔄 Start Worker"):
+    subprocess.Popen(
+        ["python", "-m", "core.worker"],
+        cwd=os.getcwd(),
+        creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+    )
+    st.sidebar.success("Worker started!")
     st.rerun()
 
-# Data Connector
-@st.cache_data(ttl=5)
-def load_data():
-    data = []
-    file_path = "training_dataset.jsonl"
+# ═══════════════════════════════════════════════════════════════════════════
+# MAIN PAGE
+# ═══════════════════════════════════════════════════════════════════════════
+st.title("🛰️ Land Utility Engine")
+st.markdown("Analyze land utility potential across any geographic area.")
+
+# Tabs
+tab_projects, tab_new, tab_queue = st.tabs(["📁 Projects", "➕ New Project", "📋 Job Queue"])
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PROJECTS TAB
+# ═══════════════════════════════════════════════════════════════════════════
+with tab_projects:
+    st.header("📁 Your Projects")
     
-    if not os.path.exists(file_path):
-        return pd.DataFrame()
-
-    with open(file_path, "r") as f:
-        for line in f:
-            try:
-                data.append(json.loads(line))
-            except:
-                continue
+    projects = pm.list_projects()
     
-    if not data:
-        return pd.DataFrame()
-
-    df_raw = pd.DataFrame(data)
-    
-    df_raw["utility_score"] = df_raw["expert_label"].apply(lambda x: x.get("gross_utility_score"))
-    df_raw["trace"] = df_raw["expert_label"].apply(lambda x: x.get("reasoning_trace"))
-    
-    df_raw["feat_water"] = df_raw["features_raw"].apply(lambda x: x.get("has_water"))
-    df_raw["feat_road"] = df_raw["features_raw"].apply(lambda x: x.get("has_road"))
-    df_raw["feat_industrial"] = df_raw["features_raw"].apply(lambda x: x.get("is_industrial"))
-    
-    df_raw["lat"] = df_raw["location"].apply(lambda x: x.get("lat"))
-    df_raw["lon"] = df_raw["location"].apply(lambda x: x.get("lon"))
-    
-    return df_raw
-
-df = load_data()
-
-if df.empty:
-    st.warning("⏳ Waiting for Daemon to generate data... Start the daemon from the sidebar.")
-    st.stop()
-
-# Tabs for navigation
-tab1, tab2 = st.tabs(["📊 Analytics Dashboard", "🤖 ML Performance"])
-
-with tab1:
-    # Key Metrics
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("📊 Scanned Sectors", len(df))
-    high_util_count = len(df[df["utility_score"] > 5])
-    col2.metric("⭐ High Utility", high_util_count)
-    col3.metric("📈 Avg Score", f"{df['utility_score'].mean():.2f}")
-    col4.metric("🔄 Daemon Cycles", st.session_state.daemon_cycles)
-
-    # Neural Vector Space (PCA)
-    st.markdown("---")
-    st.subheader("🧠 Neural Vector Space (PCA Projection)")
-    st.markdown("Visualizing how the inference engine clusters land based on raw features.")
-
-    feature_cols = ["feat_water", "feat_road", "feat_industrial"]
-    X = df[feature_cols].values
-
-    if len(df) > 3:
-        pca = PCA(n_components=2)
-        components = pca.fit_transform(X)
-        
-        df["pca_x"] = components[:, 0]
-        df["pca_y"] = components[:, 1]
-        
-        fig_pca = px.scatter(
-            df, 
-            x="pca_x", 
-            y="pca_y", 
-            color="utility_score",
-            hover_data=["trace"],
-            title="Feature Space Clustering (Color = Utility Score)",
-            color_continuous_scale="Viridis",
-            height=400
-        )
-        st.plotly_chart(fig_pca, width="stretch")
+    if not projects:
+        st.info("👋 No projects yet. Create your first project in the 'New Project' tab!")
     else:
-        st.info("Not enough data points for Vector Analysis yet.")
-
-    # Geospatial Intelligence
-    st.markdown("---")
-    st.subheader("🗺️ Geospatial Utility Heatmap")
-    fig_map = px.scatter_map(
-        df, 
-        lat="lat", 
-        lon="lon", 
-        color="utility_score",
-        size="utility_score",
-        color_continuous_scale="Magma", 
-        zoom=13,
-        title="Real-World Utility Distribution",
-        height=500
-    )
-    st.plotly_chart(fig_map, width="stretch")
-
-    # Deep Inference Inspector
-    st.markdown("---")
-    st.subheader("🔍 Deep Inference Inspector")
-    st.markdown("Examine the cognitive reasoning process for specific land sectors.")
-
-    selected_idx = st.selectbox("Select a Sample ID to Inspect:", df.index, key="inspector_select")
-    sample = df.loc[selected_idx]
-
-    cols = st.columns([1, 2])
-
-    with cols[0]:
-        st.markdown("#### 📋 Feature Activations")
-        
-        water_val = bool(sample["feat_water"])
-        road_val = bool(sample["feat_road"])
-        industrial_val = bool(sample["feat_industrial"])
-        
-        st.metric("💧 Water Infrastructure", "✓ Yes" if water_val else "✗ No")
-        st.metric("🛣️ Road Access", "✓ Yes" if road_val else "✗ No")
-        st.metric("🏭 Industrial Zoning", "✓ Yes" if industrial_val else "✗ No")
-        
-        st.markdown("---")
-        st.metric("🎯 Final Utility Score", f"{sample['utility_score']:.1f}")
-
-    with cols[1]:
-        st.markdown("#### 📊 Reasoning Waterfall")
-        
-        trace_items = sample["trace"]
-        
-        measures = ["relative"]
-        x_labels = ["Base"]
-        y_values = [0]
-        
-        for item in trace_items:
-            if "(+" in item or "(-" in item:
-                value_str = item.split("(")[1].split(")")[0]
-                value = float(value_str)
-                label = item.split("(")[0].strip()
+        for project in projects:
+            with st.expander(f"**{project.name}** ({project.id})", expanded=project.status == ProjectStatus.SCANNING):
+                col1, col2, col3 = st.columns([2, 1, 1])
                 
-                x_labels.append(label)
-                y_values.append(value)
-                measures.append("relative")
-        
-        x_labels.append("Total")
-        y_values.append(sample["utility_score"])
-        measures.append("total")
-        
-        fig_waterfall = go.Figure(go.Waterfall(
-            name="Utility Calculation",
-            orientation="v",
-            measure=measures,
-            x=x_labels,
-            y=y_values,
-            textposition="outside",
-            text=[f"{v:+.1f}" if v != 0 else "" for v in y_values],
-            connector={"line": {"color": "rgb(63, 63, 63)"}},
-            increasing={"marker": {"color": "green"}},
-            decreasing={"marker": {"color": "red"}},
-            totals={"marker": {"color": "blue"}}
-        ))
-        
-        fig_waterfall.update_layout(
-            title="Cognitive Trace: How the Score was Built",
-            showlegend=False,
-            height=400
-        )
-        
-        st.plotly_chart(fig_waterfall, width="stretch")
+                with col1:
+                    st.caption(project.description or "No description")
+                    st.write(f"📍 Center: ({project.bounds.center_latitude:.4f}, {project.bounds.center_longitude:.4f})")
+                    st.write(f"📐 Area: {project.bounds.area_sq_km:.2f} sq km")
+                    st.write(f"📊 Points: {project.points_collected}")
+                
+                with col2:
+                    # Status badge
+                    if project.status == ProjectStatus.SCANNING:
+                        st.success("🔄 Scanning")
+                    elif project.status == ProjectStatus.COMPLETED:
+                        st.info("✅ Complete")
+                    elif project.status == ProjectStatus.QUEUED:
+                        st.warning("⏳ Queued")
+                    elif project.status == ProjectStatus.ERROR:
+                        st.error(f"❌ Error: {project.error_message}")
+                    else:
+                        st.caption(f"Status: {project.status}")
+                
+                with col3:
+                    # Actions
+                    if st.button("🗺️ Open", key=f"open_{project.id}"):
+                        st.session_state.selected_project = project.id
+                        st.switch_page("pages/1_Dashboard.py")
+                    
+                    if project.status not in [ProjectStatus.SCANNING, ProjectStatus.QUEUED]:
+                        if st.button("▶️ Start Scan", key=f"start_{project.id}"):
+                            job_id = queue.enqueue(project.id)
+                            project.status = ProjectStatus.QUEUED
+                            project.save()
+                            st.success(f"Queued as job #{job_id}")
+                            st.rerun()
+                    
+                    if st.button("🗑️ Delete", key=f"delete_{project.id}"):
+                        pm.delete_project(project.id)
+                        st.rerun()
 
-with tab2:
-    st.subheader("🤖 ML Model Performance")
+# ═══════════════════════════════════════════════════════════════════════════
+# NEW PROJECT TAB
+# ═══════════════════════════════════════════════════════════════════════════
+with tab_new:
+    st.header("Create New Project")
     
-    if os.path.exists("best_model.pkl"):
-        import joblib
-        from inference import MLEngine
+    # Address search outside form for instant feedback
+    st.subheader("Location")
+    address_input = st.text_input(
+        "Search by address", 
+        placeholder="e.g., 123 Pacific Ave, Santa Cruz, CA",
+        help="Enter an address and we'll find the coordinates"
+    )
+    
+    # Initialize coordinates in session state
+    if "new_proj_lat" not in st.session_state:
+        st.session_state.new_proj_lat = 36.9741
+        st.session_state.new_proj_lon = -122.0308
+        st.session_state.new_proj_address = ""
+    
+    # Geocode if address provided
+    if address_input and address_input != st.session_state.new_proj_address:
+        from loaders.geocoder import get_geocoder
+        geocoder = get_geocoder()
+        result = geocoder.geocode(address_input)
+        if result:
+            st.session_state.new_proj_lat = result.latitude
+            st.session_state.new_proj_lon = result.longitude
+            st.session_state.new_proj_address = address_input
+            st.success(f"Found: {result.display_name[:80]}...")
+        else:
+            st.error("Address not found. Try a different format.")
+    
+    # Show current location
+    st.caption(f"Current: ({st.session_state.new_proj_lat:.4f}, {st.session_state.new_proj_lon:.4f})")
+    
+    with st.form("new_project_form"):
+        name = st.text_input("Project Name", placeholder="e.g., Santa Cruz Downtown")
+        description = st.text_area("Description (optional)", placeholder="What are you analyzing?")
         
-        engine = MLEngine()
+        # Manual coordinate adjustment
+        with st.expander("Adjust coordinates manually"):
+            col1, col2 = st.columns(2)
+            with col1:
+                center_lat = st.number_input("Latitude", value=st.session_state.new_proj_lat, format="%.4f")
+            with col2:
+                center_lon = st.number_input("Longitude", value=st.session_state.new_proj_lon, format="%.4f")
         
-        st.success("✓ Trained model found!")
+        if 'center_lat' not in dir():
+            center_lat = st.session_state.new_proj_lat
+            center_lon = st.session_state.new_proj_lon
         
-        # Feature Importance
-        st.markdown("### Feature Importance")
-        importances = engine.get_feature_importance()
+        radius_km = st.slider("Analysis radius (km)", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
         
-        if importances:
-            imp_df = pd.DataFrame(list(importances.items()), columns=['Feature', 'Importance'])
-            imp_df = imp_df.sort_values('Importance', ascending=False).head(10)
-            
-            fig_imp = px.bar(
-                imp_df,
-                x='Importance',
-                y='Feature',
-                orientation='h',
-                title="Top 10 Most Important Features",
-                color='Importance',
-                color_continuous_scale='Blues'
-            )
-            st.plotly_chart(fig_imp, width="stretch")
+        st.subheader("Settings")
+        col1, col2 = st.columns(2)
+        with col1:
+            max_points = st.number_input("Max points to collect", 
+                                          value=500, min_value=50, max_value=10000, step=50,
+                                          help="More points = better coverage but slower")
+        with col2:
+            high_value_threshold = st.slider("High value threshold", 
+                                              min_value=5.0, max_value=9.0, value=7.0, step=0.5,
+                                              help="Score above this is high value")
         
-        # Model Metrics
-        st.markdown("### Model Performance")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Best Model", engine.best_model_name if engine.best_model_name else "Unknown")
-        col2.metric("R² Score", f"{engine.best_score:.4f}" if engine.best_score > -np.inf else "N/A")
-        col3.metric("Training Samples", len(df))
+        auto_start = st.checkbox("Start scanning immediately", value=True)
         
-    else:
-        st.info("No trained model found. Click 'Train ML Models' in the sidebar to begin.")
-        st.markdown("**Requirements:**")
-        st.markdown("- At least 50 data samples")
-        st.markdown("- XGBoost and LightGBM installed (`pip install -r requirements.txt`)")
+        submitted = st.form_submit_button("Create Project", width="stretch")
+        
+        if submitted:
+            if not name:
+                st.error("Please enter a project name")
+            else:
+                # Create project
+                project = pm.create_project(
+                    name=name,
+                    center_lat=center_lat,
+                    center_lon=center_lon,
+                    radius_km=radius_km,
+                    description=description
+                )
+                
+                # Apply settings
+                project.settings.max_total_points = max_points
+                project.settings.high_value_threshold = high_value_threshold
+                project.save()
+                
+                st.success(f"✅ Created project: {project.name}")
+                
+                if auto_start:
+                    job_id = queue.enqueue(project.id)
+                    project.status = ProjectStatus.QUEUED
+                    project.save()
+                    st.info(f"📋 Queued as job #{job_id}")
+                
+                st.balloons()
+                st.rerun()
 
-# Footer
-st.markdown("---")
-st.caption("Land Utility Engine MVP | Automated Ground Truth Analysis")
+# ═══════════════════════════════════════════════════════════════════════════
+# JOB QUEUE TAB
+# ═══════════════════════════════════════════════════════════════════════════
+with tab_queue:
+    st.header("📋 Job Queue")
+    
+    jobs = queue.get_active_jobs()
+    
+    if not jobs:
+        st.info("No active jobs. Create a project and start scanning!")
+    else:
+        for job in jobs:
+            project = pm.get_project(job.project_id)
+            project_name = project.name if project else job.project_id
+            
+            with st.container():
+                col1, col2, col3 = st.columns([3, 1, 1])
+                
+                with col1:
+                    st.write(f"**Job #{job.id}** - {project_name}")
+                    st.progress(job.progress_percent / 100, text=job.progress_message)
+                
+                with col2:
+                    if job.status == JobStatus.RUNNING:
+                        st.success("🔄 Running")
+                    elif job.status == JobStatus.PENDING:
+                        st.warning("⏳ Pending")
+                
+                with col3:
+                    if job.status == JobStatus.RUNNING:
+                        if st.button("⏸️ Pause", key=f"pause_{job.id}"):
+                            queue.pause(job.id)
+                            st.rerun()
+                    if st.button("🛑 Cancel", key=f"cancel_{job.id}"):
+                        queue.cancel(job.id)
+                        if project:
+                            project.status = ProjectStatus.CREATED
+                            project.save()
+                        st.rerun()
+                
+                st.markdown("---")
+    
+    # Queue stats
+    st.subheader("📊 Queue Statistics")
+    stats = queue.get_queue_stats()
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Pending", stats.get("pending", 0))
+    col2.metric("Running", stats.get("running", 0))
+    col3.metric("Completed", stats.get("completed", 0))
+    col4.metric("Failed", stats.get("failed", 0))
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AUTO REFRESH
+# ═══════════════════════════════════════════════════════════════════════════
+if st.sidebar.checkbox("🔄 Auto-refresh", value=False):
+    import time
+    time.sleep(5)
+    st.rerun()

@@ -350,9 +350,30 @@ class GISFeatureExtractor:
     """Extracts ML-ready features from raw GIS data."""
     
     @staticmethod
-    def extract_features(gis_data: Dict) -> Dict:
-        """Convert raw GIS data into normalized features for ML."""
+    def extract_features(gis_data) -> Dict:
+        """Convert raw GIS data into normalized features for ML.
+        
+        Args:
+            gis_data: Dictionary of GIS data, or None/other types (will return empty features)
+            
+        Returns:
+            Dictionary of normalized ML features
+        """
         features = {}
+        
+        # Guard against non-dict input (old training data may have floats or None)
+        if not isinstance(gis_data, dict):
+            return {
+                'elevation_normalized': 0.0,
+                'slope_normalized': 0.0,
+                'wildfire_safety': 0.5,
+                'flood_safety': 0.5,
+                'sewer_accessibility': 0.5,
+                'water_accessibility': 0.5,
+                'is_industrial_zoned': 0,
+                'is_residential_zoned': 0,
+                'is_agricultural_zoned': 0
+            }
         
         # Terrain features
         features['elevation_normalized'] = gis_data.get('elevation_ft', 0) / 2000.0
@@ -371,9 +392,14 @@ class GISFeatureExtractor:
         
         # Zoning one-hot encoding
         zoning = gis_data.get('current_zoning', 'R-1-5')
-        features['is_industrial_zoned'] = 1 if 'M-' in zoning else 0
-        features['is_residential_zoned'] = 1 if 'R-' in zoning else 0
-        features['is_agricultural_zoned'] = 1 if 'A-' in zoning else 0
+        if isinstance(zoning, str):
+            features['is_industrial_zoned'] = 1 if 'M-' in zoning else 0
+            features['is_residential_zoned'] = 1 if 'R-' in zoning else 0
+            features['is_agricultural_zoned'] = 1 if 'A-' in zoning else 0
+        else:
+            features['is_industrial_zoned'] = 0
+            features['is_residential_zoned'] = 0
+            features['is_agricultural_zoned'] = 0
         
         return features
 
