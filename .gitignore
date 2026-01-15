@@ -1,3 +1,60 @@
-./__pycache__
-./gis_cache
-.git
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+*.whl
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local databases and caches
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+cache/
+gis_cache/
+
+# Machine learning models and data
+*.pkl
+*.joblib
+*.h5
+*.onnx
+training_dataset.jsonl
+*.jsonl
+
+# Project data (user-specific)
+projects/
+
+# Runtime files
+daemon_status.json
+*.log
+
+# Environment
+.env
+!.env.template
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Lock files
+*.lock
+poetry.lock

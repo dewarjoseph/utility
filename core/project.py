@@ -209,7 +209,11 @@ class ProjectSettings:
     surprise_detection_multiplier: float = 2.0
     """A prediction error this many times the average is flagged as 'surprise'."""
     
-    # Scoring Rules
+    # Use-case profile for scoring
+    use_case: str = "general"
+    """Use-case profile for synergy scoring: general, desalination_plant, silicon_wafer_fab, etc."""
+    
+    # Scoring Rules (fallback if synergy scoring unavailable)
     scoring_rules: List[ScoringRule] = field(default_factory=lambda: DEFAULT_SCORING_RULES.copy())
     """List of rules that affect utility scoring."""
     

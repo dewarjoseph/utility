@@ -174,9 +174,9 @@ class Worker:
                 lat = random.uniform(bounds.min_latitude, bounds.max_latitude)
                 lon = random.uniform(bounds.min_longitude, bounds.max_longitude)
                 
-                # Evaluate using scoring rules
+                # Evaluate using scoring (synergy-based or rule-based)
                 features = self._generate_features(lat, lon)
-                score = self._calculate_score(features, settings.scoring_rules)
+                score = self._calculate_score(features, settings.scoring_rules, settings.use_case)
                 
                 # Save the result
                 self._save_point(project, lat, lon, features, score)
@@ -227,15 +227,42 @@ class Worker:
                 "flood_risk": False,
             }
     
-    def _calculate_score(self, features: dict, rules: list) -> float:
+    def _calculate_score(self, features: dict, rules: list, use_case: str = "general") -> float:
         """
-        Calculate utility score based on features and rules.
+        Calculate utility score based on features.
         
-        All scoring is deterministic and explicit - no hidden logic.
+        Uses the advanced synergy scorer if available, falling back to 
+        rule-based scoring otherwise.
+        
+        Args:
+            features: Feature dictionary from data fetcher
+            rules: List of ScoringRule objects (fallback)
+            use_case: Use-case profile name (general, desalination_plant, etc.)
         """
+        # Try synergy-based scoring first
+        try:
+            from core.scoring import get_scorer, UseCase
+            
+            # Map use_case string to UseCase enum
+            use_case_map = {
+                "general": UseCase.GENERAL,
+                "desalination_plant": UseCase.DESALINATION,
+                "silicon_wafer_fab": UseCase.SILICON_FAB,
+                "warehouse_distribution": UseCase.WAREHOUSE,
+                "light_manufacturing": UseCase.MANUFACTURING,
+            }
+            uc = use_case_map.get(use_case, UseCase.GENERAL)
+            
+            scorer = get_scorer(uc)
+            return scorer.score(features)
+        except ImportError:
+            log.debug("Synergy scorer not available, using rule-based")
+        except Exception as e:
+            log.warning(f"Synergy scoring failed: {e}")
+        
+        # Fall back to rule-based scoring
         base_score = 5.0  # Start at middle of 0-10 scale
         
-        trace = []
         for rule in rules:
             if not rule.enabled:
                 continue
@@ -244,24 +271,17 @@ class Worker:
             
             if feature_value:
                 points = rule.points_when_true
-                if points != 0:
-                    trace.append(f"{rule.name} (+{points})")
             else:
                 points = rule.points_when_false
-                if points != 0:
-                    trace.append(f"{rule.name} ({points})")
             
             base_score += points
         
         # Apply flood risk penalty (not in standard rules)
         if features.get("flood_risk"):
             base_score -= 2.0
-            trace.append("Flood Risk (-2.0)")
         
         # Clamp to 0-10
-        final_score = max(0.0, min(10.0, base_score))
-        
-        return final_score
+        return max(0.0, min(10.0, base_score))
     
     def _save_point(self, project: Project, lat: float, lon: float, 
                     features: dict, score: float):

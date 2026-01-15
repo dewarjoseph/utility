@@ -160,12 +160,14 @@ if df.empty:
 # ═══════════════════════════════════════════════════════════════════════════
 # INITIALIZE ALL STATE (before any rendering)
 # ═══════════════════════════════════════════════════════════════════════════
-max_idx = len(df) - 1
+# Handle edge case: if only 1 point, set max_idx to at least 1 to avoid slider error
+max_idx = max(1, len(df) - 1)
+single_point_mode = len(df) == 1
 
 # Initialize slider value if not set or if out of range
 if "slider_val" not in st.session_state:
     st.session_state.slider_val = 0
-st.session_state.slider_val = max(0, min(st.session_state.slider_val, max_idx))
+st.session_state.slider_val = max(0, min(st.session_state.slider_val, len(df) - 1))
 
 # Initialize jump input to match slider
 if "jump_val" not in st.session_state:
@@ -226,26 +228,61 @@ with tab_map:
         
         st.divider()
         
-        # Info from pre-initialized current_point
+        # Score with use-case indicator
         st.metric("Score", f"{current_point['score']:.1f}")
         st.caption(f"({current_point['lat']:.5f}, {current_point['lon']:.5f})")
         
-        # Features
+        # Show use case if set
+        use_case_labels = {
+            "general": "General",
+            "desalination_plant": "🌊 Desalination",
+            "silicon_wafer_fab": "💎 Silicon Fab",
+            "warehouse_distribution": "📦 Warehouse",
+            "light_manufacturing": "🏭 Manufacturing",
+        }
+        uc = project.settings.use_case if hasattr(project.settings, 'use_case') else "general"
+        st.caption(f"Profile: {use_case_labels.get(uc, uc)}")
+        
+        st.divider()
+        
+        # Features - grouped by category
         st.markdown("**Features:**")
         features = current_point.get("features_raw", {})
         if isinstance(features, dict):
-            for key, val in list(features.items())[:8]:
-                if isinstance(val, bool):
-                    st.text(f"{'[Y]' if val else '[N]'} {key.replace('_', ' ')}")
+            # Infrastructure
+            infra_keys = ["has_water", "has_road", "has_power_nearby", "rail_nearby", 
+                         "port_nearby", "highway_nearby", "coastal_access"]
+            for key in infra_keys:
+                if key in features:
+                    val = features[key]
+                    icon = "✅" if val else "❌"
+                    st.text(f"{icon} {key.replace('_', ' ').replace('has ', '').title()}")
+            
+            # Land use  
+            land_keys = ["is_industrial", "is_residential", "is_commercial", "is_agricultural"]
+            for key in land_keys:
+                if key in features and features[key]:
+                    st.text(f"🏷️ {key.replace('is_', '').title()}")
+            
+            # Environmental
+            if features.get("flood_risk"):
+                st.text("⚠️ Flood Risk")
+            if features.get("high_elevation"):
+                st.text("⛰️ High Elevation")
+            if features.get("urban_area"):
+                st.text("🏙️ Urban Area")
     
     with map_col:
-        # Slider is the source of truth
-        st.slider(
-            f"Point {current_idx}/{max_idx}", 
-            min_value=0, 
-            max_value=max_idx,
-            key="slider_val"
-        )
+        # Slider - show point count or info if only 1 point
+        if single_point_mode:
+            st.info("Only 1 point collected so far...")
+        else:
+            st.slider(
+                f"Point {current_idx}/{len(df)-1}", 
+                min_value=0, 
+                max_value=len(df)-1,
+                key="slider_val"
+            )
         
         # Prepare map data with current selection
         df_map = df.copy()
@@ -309,44 +346,123 @@ with tab_analysis:
         fig_line.update_layout(height=300, margin=dict(l=20, r=20, t=20, b=20))
         st.plotly_chart(fig_line, width="stretch")
     
-    # Feature breakdown
+    # Feature breakdown - comprehensive
     st.subheader("🏷️ Feature Analysis")
-    if "has_water" in df.columns:
-        feat_data = {
-            "Feature": ["Water Access", "Road Access", "Industrial Zone"],
-            "Present": [
-                df["has_water"].sum(),
-                df["has_road"].sum() if "has_road" in df.columns else 0,
-                df["is_industrial"].sum() if "is_industrial" in df.columns else 0
-            ],
-            "Avg Score When Present": [
-                df[df["has_water"] == True]["score"].mean() if df["has_water"].sum() > 0 else 0,
-                df[df.get("has_road", False) == True]["score"].mean() if df.get("has_road", pd.Series([False])).sum() > 0 else 0,
-                df[df.get("is_industrial", False) == True]["score"].mean() if df.get("is_industrial", pd.Series([False])).sum() > 0 else 0
-            ]
-        }
-        st.dataframe(pd.DataFrame(feat_data), width="stretch")
+    
+    # Build feature stats from features_raw
+    feature_stats = []
+    
+    # Define features to analyze
+    features_to_check = [
+        ("has_water", "💧 Water Access"),
+        ("has_road", "🛣️ Road Access"),
+        ("has_power_nearby", "⚡ Power Grid"),
+        ("rail_nearby", "🚂 Rail Access"),
+        ("highway_nearby", "🛤️ Highway"),
+        ("coastal_access", "🌊 Coastal"),
+        ("is_industrial", "🏭 Industrial"),
+        ("is_commercial", "🏢 Commercial"),
+        ("is_residential", "🏠 Residential"),
+        ("urban_area", "🏙️ Urban"),
+    ]
+    
+    for feat_key, feat_name in features_to_check:
+        # Check in features_raw column
+        has_feature = []
+        for idx, row in df.iterrows():
+            features = row.get("features_raw", {})
+            if isinstance(features, dict):
+                has_feature.append(features.get(feat_key, False))
+            else:
+                has_feature.append(False)
+        
+        count = sum(has_feature)
+        if count > 0:
+            # Calculate avg score when feature is present
+            mask = pd.Series(has_feature)
+            avg_score = df.loc[mask, "score"].mean() if mask.sum() > 0 else 0
+            feature_stats.append({
+                "Feature": feat_name,
+                "Count": count,
+                "% of Points": f"{count/len(df)*100:.1f}%",
+                "Avg Score": f"{avg_score:.2f}"
+            })
+    
+    if feature_stats:
+        st.dataframe(pd.DataFrame(feature_stats), width="stretch", hide_index=True)
+    else:
+        st.info("No feature data available yet")
+    
+    # Synergy info
+    st.subheader("🔗 Synergy Bonuses")
+    uc = project.settings.use_case if hasattr(project.settings, 'use_case') else "general"
+    
+    synergy_info = {
+        "general": [
+            ("💧 Water + 🏭 Industrial", "+1.0"),
+            ("🛣️ Road + ⚡ Power", "+0.5"),
+        ],
+        "desalination_plant": [
+            ("🌊 Coastal + 🏭 Industrial", "+2.5"),
+            ("🌊 Coastal + ⚡ Power", "+2.0"),
+            ("📉 Low Elevation + 🌊 Coastal", "+1.5"),
+            ("⚡ Power + 🏭 Industrial", "+1.0"),
+        ],
+        "silicon_wafer_fab": [
+            ("⚡ Power + 🏭 Industrial", "+2.0"),
+            ("💧 Water + 🏭 Industrial", "+1.5"),
+            ("🛤️ Highway + 🏭 Manufacturing Workforce", "+1.0"),
+        ],
+        "warehouse_distribution": [
+            ("🛤️ Highway + 🚂 Rail", "+2.5"),
+            ("🛤️ Highway + ⚓ Port", "+2.0"),
+            ("🏭 Industrial + 🛤️ Highway", "+1.0"),
+        ],
+        "light_manufacturing": [
+            ("🏭 Industrial + ⚡ Power", "+1.5"),
+            ("🛣️ Road + 🛤️ Highway", "+1.0"),
+        ],
+    }
+    
+    synergies = synergy_info.get(uc, synergy_info["general"])
+    for combo, bonus in synergies:
+        st.text(f"{combo} → {bonus}")
 
 with tab_settings:
     st.subheader("⚙️ Project Settings")
     
-    st.write("**Scoring Rules:**")
-    for rule in project.settings.scoring_rules:
-        with st.expander(f"{'✅' if rule.enabled else '❌'} {rule.name}"):
-            st.write(rule.description)
-            st.write(f"Feature: `{rule.feature_key}`")
-            st.write(f"Points when true: **{rule.points_when_true:+.1f}**")
-            st.write(f"Points when false: **{rule.points_when_false:+.1f}**")
+    # Use-case profile
+    use_case_info = {
+        "general": ("🏭 General Industrial", "Balanced scoring for general industrial development"),
+        "desalination_plant": ("🌊 Desalination Plant", "Optimized for coastal water facilities"),
+        "silicon_wafer_fab": ("💎 Silicon Wafer Fab", "Semiconductor manufacturing"),
+        "warehouse_distribution": ("📦 Warehouse/Distribution", "Logistics and distribution centers"),
+        "light_manufacturing": ("🏭 Light Manufacturing", "General manufacturing facilities"),
+    }
+    
+    uc = project.settings.use_case if hasattr(project.settings, 'use_case') else "general"
+    uc_name, uc_desc = use_case_info.get(uc, ("Unknown", ""))
+    
+    st.write("**Analysis Profile:**")
+    st.info(f"{uc_name}\n\n{uc_desc}")
     
     st.markdown("---")
     st.write("**Thresholds:**")
-    st.write(f"High Value: ≥ {project.settings.high_value_threshold}")
-    st.write(f"Low Value: ≤ {project.settings.low_value_threshold}")
+    col1, col2 = st.columns(2)
+    col1.metric("High Value", f"≥ {project.settings.high_value_threshold}")
+    col2.metric("Low Value", f"≤ {project.settings.low_value_threshold}")
     
     st.markdown("---")
     st.write("**Bounds:**")
     st.write(f"Lat: {project.bounds.min_latitude:.4f} to {project.bounds.max_latitude:.4f}")
     st.write(f"Lon: {project.bounds.min_longitude:.4f} to {project.bounds.max_longitude:.4f}")
+    st.write(f"Area: {project.bounds.area_sq_km:.2f} km²")
+    
+    st.markdown("---")
+    st.write("**Fallback Scoring Rules:**")
+    st.caption("Used if synergy scoring unavailable")
+    for rule in project.settings.scoring_rules[:3]:  # Show first 3 only
+        st.text(f"{'✅' if rule.enabled else '❌'} {rule.name}: {rule.points_when_true:+.1f} / {rule.points_when_false:+.1f}")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # AUTO REFRESH

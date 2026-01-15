@@ -182,6 +182,24 @@ with tab_new:
         
         radius_km = st.slider("Analysis radius (km)", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
         
+        # Use-case profile selector
+        st.subheader("Analysis Type")
+        use_cases = {
+            "general": ("🏭 General Industrial", "Balanced scoring for general industrial development"),
+            "desalination_plant": ("🌊 Desalination Plant", "Optimized for coastal water facilities - prioritizes ocean access, power, industrial zoning"),
+            "silicon_wafer_fab": ("💎 Silicon Wafer Fab", "Semiconductor manufacturing - prioritizes power, clean water, seismic stability"),
+            "warehouse_distribution": ("📦 Warehouse/Distribution", "Logistics centers - prioritizes highway, rail, port access"),
+            "light_manufacturing": ("🏭 Light Manufacturing", "General manufacturing - balanced industrial scoring"),
+        }
+        
+        use_case = st.selectbox(
+            "What are you analyzing for?",
+            options=list(use_cases.keys()),
+            format_func=lambda x: use_cases[x][0],
+            help="Different use cases have different scoring weights and synergies"
+        )
+        st.caption(use_cases[use_case][1])
+        
         st.subheader("Settings")
         col1, col2 = st.columns(2)
         with col1:
@@ -213,6 +231,7 @@ with tab_new:
                 # Apply settings
                 project.settings.max_total_points = max_points
                 project.settings.high_value_threshold = high_value_threshold
+                project.settings.use_case = use_case  # Save selected use case
                 project.save()
                 
                 st.success(f"✅ Created project: {project.name}")
