@@ -11,6 +11,8 @@ dist/
 build/
 *.whl
 
+.agent/
+
 # Virtual environments
 venv/
 .venv/
