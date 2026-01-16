@@ -154,14 +154,23 @@ class InfrastructureLoader:
         """Execute Overpass query with retry."""
         self._rate_limit()
         
-        response = requests.post(
-            self.OVERPASS_URL,
-            data={"data": query},
-            timeout=60,
-            headers={"User-Agent": "LandUtilityEngine/1.0"}
-        )
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = requests.post(
+                self.OVERPASS_URL,
+                data={"data": query},
+                # Increased timeout for complex queries
+                timeout=90,
+                headers={"User-Agent": "LandUtilityEngine/1.0"}
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.ReadTimeout:
+            log.warning("Overpass query timed out (server side)")
+            raise
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:
+                log.warning("Overpass rate limit exceeded, backing off...")
+            raise
     
     def fetch_infrastructure(
         self, 

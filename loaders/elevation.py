@@ -144,9 +144,13 @@ class ElevationLoader:
         
         try:
             self._rate_limit()
-            response = self.session.get(self.USGS_URL, params=params, timeout=10)
+            # Increased timeout to 30s for slow USGS API
+            response = self.session.get(self.USGS_URL, params=params, timeout=30)
             response.raise_for_status()
             data = response.json()
+        except requests.exceptions.ReadTimeout:
+            log.error(f"Elevation request timed out for ({lat}, {lon}) after 30s")
+            return None
         except Exception as e:
             log.error(f"Elevation request failed for ({lat}, {lon}): {e}")
             return None

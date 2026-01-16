@@ -168,13 +168,21 @@ class OSMLoader:
     def _make_request(self, query: str) -> Dict:
         """Make a rate-limited request with retry."""
         self._rate_limit()
-        response = self.session.post(
-            self.OVERPASS_URL,
-            data={"data": query},
-            timeout=self.timeout
-        )
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = self.session.post(
+                self.OVERPASS_URL,
+                data={"data": query},
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.ReadTimeout:
+            log.warning(f"OSM query timed out after {self.timeout}s")
+            raise
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:
+                log.warning("OSM rate limit exceeded (429), backing off...")
+            raise
     
     def fetch_raw(self, lat: float, lon: float, radius: int = 500) -> Dict:
         """
