@@ -12,5 +12,7 @@ tenacity<9.0.0
 river>=0.21.0
 duckdb>=0.9.0
 streamlit-plotly-events>=0.0.6
+pytest>=7.4.0
+pytest-cov>=4.1.0
 
 
