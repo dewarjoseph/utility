@@ -48,6 +48,10 @@ projects/
 # Runtime files
 daemon_status.json
 *.log
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
 
 # Environment
 .env
