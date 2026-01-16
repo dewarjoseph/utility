@@ -1,34 +1,24 @@
 """
-Knowledge Base Page - RAG-powered document search and API data.
+Knowledge Base
 
-Provides municipal code search and integrated external data display.
+Document search and integrated property data.
 """
 
 import streamlit as st
+from core.theme import get_page_config, inject_theme
 
-st.set_page_config(
-    page_title="Knowledge Base - Gross Utility",
-    page_icon="📚",
-    layout="wide"
-)
-
-st.markdown("""
-<style>
-    #MainMenu, header, footer, .stDeployButton {visibility: hidden; display: none;}
-    .block-container { padding: 1rem 2rem; }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(**get_page_config("Knowledge"))
+inject_theme()
 
 from core.rag import RAGPipeline, Document, DocumentType, SAMPLE_ZONING_CODE
 from core.api_layer import get_api_layer
 
-st.title("📚 Knowledge Base")
-st.markdown("*Search municipal codes and access integrated property data.*")
+st.title("Knowledge Base")
+st.caption("Search municipal codes and access integrated property data.")
 
 # Initialize session state
 if 'rag_pipeline' not in st.session_state:
     st.session_state.rag_pipeline = RAGPipeline()
-    # Pre-load sample zoning code
     doc = Document(
         id="sample_zoning",
         title="Sample Municipal Zoning Code",
@@ -44,12 +34,12 @@ if 'api_layer' not in st.session_state:
 
 # Tabs
 tab_search, tab_api, tab_docs = st.tabs([
-    "🔍 Document Search", "🌐 API Data", "📄 Documents"
+    "Document Search", "Property Data", "Documents"
 ])
 
 with tab_search:
     st.header("Search Municipal Codes")
-    st.markdown("Ask questions about zoning regulations, building codes, and ordinances.")
+    st.caption("Ask questions about zoning regulations, building codes, and ordinances.")
     
     pipeline = st.session_state.rag_pipeline
     stats = pipeline.get_stats()
@@ -59,7 +49,7 @@ with tab_search:
     col2.metric("Chunks", stats['chunks'])
     col3.metric("Jurisdictions", len(stats['jurisdictions']))
     
-    st.write("---")
+    st.divider()
     
     query = st.text_input(
         "Ask a question", 
@@ -71,7 +61,7 @@ with tab_search:
     with col1:
         top_k = st.number_input("Results", 1, 10, 3)
     
-    if st.button("🔍 Search", type="primary") and query:
+    if st.button("Search", type="primary") and query:
         with st.spinner("Searching..."):
             results = pipeline.query(query, top_k=top_k)
         
@@ -83,13 +73,13 @@ with tab_search:
                 score = result.score
                 
                 with st.expander(
-                    f"**{i}. {chunk.section_path or 'Document'}** (Score: {score:.2f})",
+                    f"{i}. {chunk.section_path or 'Document'} (Score: {score:.2f})",
                     expanded=(i == 1)
                 ):
                     st.markdown(chunk.content)
                     
                     if result.parent_content and result.parent_content != chunk.content:
-                        st.write("---")
+                        st.divider()
                         st.caption("**Full Section Context:**")
                         st.markdown(result.parent_content[:1000] + "..." 
                                    if len(result.parent_content) > 1000 
@@ -97,11 +87,11 @@ with tab_search:
         else:
             st.info("No results found. Try a different query.")
     
-    st.write("---")
-    st.subheader("💡 Sample Questions")
+    st.divider()
+    st.subheader("Sample Questions")
     
     sample_questions = [
-        "What is the maximum building height in R-1?",
+        "What is the maximum height in R-1?",
         "What are the setback requirements?",
         "Tell me about accessory dwelling units",
         "What are the parking requirements?",
@@ -117,7 +107,7 @@ with tab_search:
 
 with tab_api:
     st.header("Integrated Property Data")
-    st.markdown("Get zoning, construction costs, climate risk, and solar potential for any location.")
+    st.caption("Get zoning, construction costs, climate risk, and solar potential for any location.")
     
     api = st.session_state.api_layer
     
@@ -133,7 +123,7 @@ with tab_api:
     with col2:
         building_sqft = st.number_input("Building Size (sqft)", value=10000, min_value=500)
     
-    if st.button("🌐 Fetch All Data", type="primary"):
+    if st.button("Fetch Data", type="primary"):
         with st.spinner("Fetching data from all sources..."):
             data = api.get_all_data(
                 latitude, longitude, 
@@ -141,10 +131,10 @@ with tab_api:
                 sqft=building_sqft
             )
         
-        st.success("Data retrieved!")
+        st.success("Data retrieved")
         
         # Zoning
-        st.subheader("🏗️ Zoning Data")
+        st.subheader("Zoning")
         zoning = data['zoning']
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Zone", zoning.zone_code)
@@ -152,30 +142,30 @@ with tab_api:
         col3.metric("Max FAR", zoning.max_far)
         col4.metric("Lot Coverage", f"{zoning.max_lot_coverage*100:.0f}%")
         
-        st.caption(f"**{zoning.zone_name}** - Allowed uses: {', '.join(zoning.allowed_uses)}")
+        st.caption(f"{zoning.zone_name} - Allowed uses: {', '.join(zoning.allowed_uses)}")
         
         # Construction Costs
-        st.subheader("💰 Construction Costs")
+        st.subheader("Construction Costs")
         construction = data['construction']
         col1, col2, col3 = st.columns(3)
-        col1.metric("Cost/sqft", f"${construction.cost_per_sqft:.0f}")
+        col1.metric("Cost per sqft", f"${construction.cost_per_sqft:.0f}")
         col2.metric("Total Estimate", f"${construction.total_estimate:,.0f}")
         col3.metric("Location Factor", f"{construction.location_factor:.2f}x")
         
         # Climate Risk
-        st.subheader("🌍 Climate Risk")
+        st.subheader("Climate Risk")
         climate = data['climate']
         col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("🌊 Flood", f"{climate.flood_factor}/10")
-        col2.metric("🔥 Fire", f"{climate.fire_factor}/10")
-        col3.metric("🌡️ Heat", f"{climate.heat_factor}/10")
-        col4.metric("💨 Wind", f"{climate.wind_factor}/10")
-        col5.metric("📊 Overall", f"{climate.overall_risk}/10")
+        col1.metric("Flood", f"{climate.flood_factor}/10")
+        col2.metric("Fire", f"{climate.fire_factor}/10")
+        col3.metric("Heat", f"{climate.heat_factor}/10")
+        col4.metric("Wind", f"{climate.wind_factor}/10")
+        col5.metric("Overall", f"{climate.overall_risk}/10")
         
-        st.caption(f"Estimated annual insurance: **${climate.insurance_estimate:,.0f}**")
+        st.caption(f"Estimated annual insurance: ${climate.insurance_estimate:,.0f}")
         
         # Solar
-        st.subheader("☀️ Solar Potential")
+        st.subheader("Solar Potential")
         solar = data['solar']
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Annual kWh", f"{solar.annual_kwh:,.0f}")
@@ -185,7 +175,7 @@ with tab_api:
 
 with tab_docs:
     st.header("Document Management")
-    st.markdown("Upload and manage municipal code documents.")
+    st.caption("Upload and manage municipal code documents.")
     
     pipeline = st.session_state.rag_pipeline
     
@@ -193,14 +183,14 @@ with tab_docs:
     if pipeline.documents:
         st.subheader("Indexed Documents")
         for doc_id, doc in pipeline.documents.items():
-            with st.expander(f"📄 {doc.title}"):
+            with st.expander(doc.title):
                 col1, col2 = st.columns(2)
                 col1.write(f"**Type:** {doc.doc_type.value}")
                 col1.write(f"**Jurisdiction:** {doc.jurisdiction}")
                 col2.write(f"**Chunks:** {len(doc.chunks)}")
                 col2.write(f"**ID:** {doc.id}")
     
-    st.write("---")
+    st.divider()
     st.subheader("Add New Document")
     
     col1, col2 = st.columns(2)
@@ -217,7 +207,7 @@ with tab_docs:
         placeholder="Paste the full text of the document here..."
     )
     
-    if st.button("📥 Ingest Document"):
+    if st.button("Ingest Document"):
         if doc_title and doc_content:
             new_doc = Document(
                 id=f"doc_{len(pipeline.documents)}",
@@ -229,7 +219,7 @@ with tab_docs:
             )
             
             chunk_count = pipeline.ingest_document(new_doc)
-            st.success(f"Ingested '{doc_title}' with {chunk_count} chunks!")
+            st.success(f"Ingested '{doc_title}' with {chunk_count} chunks")
             st.rerun()
         else:
             st.error("Please provide both title and content.")

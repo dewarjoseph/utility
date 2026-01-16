@@ -1,41 +1,30 @@
 """
-Governance Page - Cooperative governance and member management.
+Governance
 
-Provides quadratic voting, bylaws generation, and revenue share tracking.
+Democratic decision-making, bylaws generation, and member management.
 """
 
 import streamlit as st
+from core.theme import get_page_config, inject_theme
 
-st.set_page_config(
-    page_title="Governance - Gross Utility",
-    page_icon="🏛️",
-    layout="wide"
-)
-
-st.markdown("""
-<style>
-    #MainMenu, header, footer, .stDeployButton {visibility: hidden; display: none;}
-    .block-container { padding: 1rem 2rem; }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(**get_page_config("Governance"))
+inject_theme()
 
 from core.governance import QuadraticVotingEngine, ProposalStatus
 from core.bylaws import BylawsGenerator, BylawsConfig, EntityType, VotingStructure, BoardElection, SurplusDistribution
 from core.revenue_share import RevenueShareLedger
 
-st.title("🏛️ Cooperative Governance")
-st.markdown("*Democratic decision-making and member management for your cooperative.*")
+st.title("Cooperative Governance")
+st.caption("Democratic decision-making and member management for your cooperative.")
 
 # Initialize session state
 if 'voting_engine' not in st.session_state:
     st.session_state.voting_engine = QuadraticVotingEngine()
-    # Add demo members
     for i in range(1, 6):
         st.session_state.voting_engine.add_member(f"member_{i}")
 
 if 'ledger' not in st.session_state:
     st.session_state.ledger = RevenueShareLedger()
-    # Add demo data
     st.session_state.ledger.add_member("m1", "Alice Johnson")
     st.session_state.ledger.add_member("m2", "Bob Smith")
     st.session_state.ledger.add_member("m3", "Carol Davis")
@@ -45,15 +34,12 @@ if 'ledger' not in st.session_state:
 
 # Tabs
 tab_voting, tab_bylaws, tab_members = st.tabs([
-    "🗳️ Quadratic Voting", "📜 Bylaws Generator", "👥 Member Ledger"
+    "Quadratic Voting", "Bylaws Generator", "Member Ledger"
 ])
 
 with tab_voting:
     st.header("Quadratic Voting")
-    st.markdown("""
-    Quadratic voting protects minority interests by making votes increasingly expensive:
-    - 1 vote = 1 credit, 2 votes = 4 credits, 3 votes = 9 credits...
-    """)
+    st.caption("Vote cost increases quadratically: 1 vote = 1 credit, 2 votes = 4 credits, 3 votes = 9 credits.")
     
     engine = st.session_state.voting_engine
     
@@ -95,9 +81,9 @@ with tab_voting:
                 voter_id = st.selectbox("Your Member ID", 
                     [f"member_{i}" for i in range(1, 6)])
                 
-                st.write("---")
+                st.divider()
                 st.write("**Allocate your 100 voice credits:**")
-                st.caption("Cost = votes². More votes = exponentially more credits.")
+                st.caption("Cost = votes squared. More votes = exponentially more credits.")
                 
                 allocations = {}
                 total_cost = 0
@@ -119,16 +105,16 @@ with tab_voting:
                 if credits_remaining >= 0:
                     st.metric("Credits Remaining", credits_remaining)
                 else:
-                    st.error(f"Over budget by {-credits_remaining} credits!")
+                    st.error(f"Over budget by {-credits_remaining} credits")
                 
                 if st.button("Submit Vote") and credits_remaining >= 0:
                     success = engine.cast_vote(selected.id, voter_id, allocations)
                     if success:
-                        st.success("Vote recorded!")
+                        st.success("Vote recorded")
                     else:
                         st.error("Failed to record vote")
                 
-                st.write("---")
+                st.divider()
                 if st.button("Tally Results"):
                     result = engine.tally_votes(selected.id)
                     
@@ -137,13 +123,13 @@ with tab_voting:
                         st.metric(opt, f"{votes} votes")
                     
                     if result.winner:
-                        st.success(f"🏆 Winner: **{result.winner}**")
+                        st.success(f"Winner: {result.winner}")
         else:
-            st.info("No active proposals. Create one to start voting!")
+            st.info("No active proposals. Create one to start voting.")
 
 with tab_bylaws:
     st.header("Bylaws Generator")
-    st.markdown("Generate legally-compliant cooperative bylaws based on your governance choices.")
+    st.caption("Generate legally-compliant cooperative bylaws based on your governance choices.")
     
     col1, col2 = st.columns(2)
     
@@ -164,7 +150,7 @@ with tab_bylaws:
         surplus = st.selectbox("Surplus Distribution", list(SurplusDistribution),
             format_func=lambda s: s.value.replace("_", " ").title())
     
-    st.write("---")
+    st.divider()
     st.subheader("Anti-Speculation Provisions")
     col1, col2, col3 = st.columns(3)
     
@@ -181,7 +167,7 @@ with tab_bylaws:
     with col3:
         first_refusal = st.checkbox("Right of First Refusal", value=True)
     
-    if st.button("📜 Generate Bylaws", type="primary"):
+    if st.button("Generate Bylaws", type="primary"):
         config = BylawsConfig(
             cooperative_name=coop_name,
             entity_type=entity_type,
@@ -199,13 +185,13 @@ with tab_bylaws:
         generator = BylawsGenerator()
         bylaws = generator.generate(config)
         
-        st.success("Bylaws generated!")
+        st.success("Bylaws generated")
         
-        with st.expander("📄 View Generated Bylaws", expanded=True):
+        with st.expander("View Generated Bylaws", expanded=True):
             st.markdown(bylaws.to_markdown())
         
         st.download_button(
-            "📥 Download as Markdown",
+            "Download as Markdown",
             bylaws.to_markdown(),
             file_name=f"{coop_name.replace(' ', '_')}_bylaws.md",
             mime="text/markdown"
@@ -213,7 +199,7 @@ with tab_bylaws:
 
 with tab_members:
     st.header("Member Ledger")
-    st.markdown("Track capital contributions, revenue share agreements, and patronage dividends.")
+    st.caption("Track capital contributions, revenue share agreements, and patronage dividends.")
     
     ledger = st.session_state.ledger
     metrics = ledger.get_community_metrics()
@@ -223,11 +209,11 @@ with tab_members:
     col2.metric("Total Capital", f"${metrics['total_capital_raised']:,.0f}")
     col3.metric("Avg Investment", f"${metrics['average_investment']:,.0f}")
     
-    st.write("---")
+    st.divider()
     st.subheader("Member Accounts")
     
     for member_id, account in ledger.members.items():
-        with st.expander(f"👤 {account.name}"):
+        with st.expander(account.name):
             col1, col2, col3 = st.columns(3)
             col1.metric("Capital Balance", f"${account.capital_balance:,.0f}")
             col2.metric("Patronage Credits", f"${account.patronage_credits:,.0f}")
@@ -236,20 +222,19 @@ with tab_members:
             if account.transactions:
                 st.write("**Recent Transactions:**")
                 for txn in account.transactions[-3:]:
-                    st.write(f"  • {txn.description}: ${txn.amount:,.0f}")
+                    st.write(f"  - {txn.description}: ${txn.amount:,.0f}")
     
-    st.write("---")
+    st.divider()
     st.subheader("Patronage Dividend Simulator")
     
     surplus = st.number_input("Annual Surplus to Distribute ($)", 
         value=10000, min_value=0, step=1000)
     
     if st.button("Calculate Dividends"):
-        # Equal patronage for demo
         patronage = {m: 1 for m in ledger.members.keys()}
         dividends = ledger.calculate_patronage_dividends(surplus, patronage)
         
-        st.success("Dividends calculated!")
+        st.success("Dividends calculated")
         for member_id, amount in dividends.items():
             name = ledger.members[member_id].name
-            st.write(f"  • {name}: **${amount:,.0f}**")
+            st.write(f"  - {name}: ${amount:,.0f}")

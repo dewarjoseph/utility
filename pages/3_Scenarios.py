@@ -1,41 +1,32 @@
 """
-Scenario Analysis Page - What-if scenarios and stress testing.
+Scenario Analysis
 
-Provides Monte Carlo simulation and sensitivity analysis for pro formas.
+Stress testing with what-if scenarios and Monte Carlo simulation.
 """
 
 import streamlit as st
+from core.theme import get_page_config, inject_theme
 
-st.set_page_config(
-    page_title="Scenario Analysis - Gross Utility",
-    page_icon="📊",
-    layout="wide"
-)
-
-st.markdown("""
-<style>
-    #MainMenu, header, footer, .stDeployButton {visibility: hidden; display: none;}
-    .block-container { padding: 1rem 2rem; }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(**get_page_config("Scenarios"))
+inject_theme()
 
 from core.sensitivity import SensitivityAnalyzer
 from core.proforma import ProFormaEngine, ProFormaInputs
 from loaders.environmental import get_environmental_loader
 
-st.title("📊 Scenario Analysis")
-st.markdown("*Stress test your project with what-if scenarios and Monte Carlo simulation.*")
+st.title("Scenario Analysis")
+st.caption("Stress test your project with what-if scenarios and Monte Carlo simulation.")
 
 # Sidebar inputs
 with st.sidebar:
-    st.header("Project Parameters")
+    st.subheader("Project Parameters")
     
     lot_size = st.number_input("Lot Size (sqft)", value=10000, min_value=1000)
     buildable_sqft = st.number_input("Buildable Area (sqft)", value=15000, min_value=1000)
     num_units = st.number_input("Number of Units", value=10, min_value=1)
     
-    st.markdown("---")
-    st.header("Financial Assumptions")
+    st.divider()
+    st.subheader("Financial Assumptions")
     
     interest_rate = st.slider("Interest Rate (%)", 4.0, 10.0, 6.5, 0.25) / 100
     ltv_ratio = st.slider("LTV Ratio (%)", 50, 80, 65) / 100
@@ -50,22 +41,22 @@ inputs = ProFormaInputs(
 base_proforma = engine.calculate(inputs)
 
 # Display base metrics
-st.header("📈 Base Case Metrics")
+st.header("Base Case")
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Total Cost", f"${base_proforma.total_development_cost:,.0f}")
 col2.metric("NOI", f"${base_proforma.net_operating_income:,.0f}")
 col3.metric("Yield on Cost", f"{base_proforma.yield_on_cost*100:.1f}%")
 col4.metric("Community Dividend", f"${base_proforma.community_dividend_annual:,.0f}")
 
-st.markdown("---")
+st.divider()
 
 # Tabs for different analyses
 tab_scenarios, tab_montecarlo, tab_environmental = st.tabs([
-    "🎚️ What-If Scenarios", "🎲 Monte Carlo", "🌍 Environmental Risk"
+    "What-If Scenarios", "Monte Carlo", "Environmental Risk"
 ])
 
 with tab_scenarios:
-    st.header("What-If Scenario Analysis")
+    st.header("What-If Scenarios")
     
     analyzer = SensitivityAnalyzer()
     loan_amount = base_proforma.total_development_cost * ltv_ratio
@@ -87,7 +78,7 @@ with tab_scenarios:
         st.metric("Adjusted Cash Flow", f"${result.adjusted_value:,.0f}", 
                   f"{result.impact_pct:+.1f}%", delta_color=delta_color)
     
-    st.info(f"💡 {result.recommendation}")
+    st.info(result.recommendation)
     
     # Construction cost scenarios
     st.subheader("Construction Cost Sensitivity")
@@ -104,11 +95,11 @@ with tab_scenarios:
         st.metric("Adjusted Hard Costs", f"${cost_result.adjusted_value:,.0f}",
                   f"{cost_change:+d}%")
     
-    st.info(f"💡 {cost_result.recommendation}")
+    st.info(cost_result.recommendation)
 
 with tab_montecarlo:
     st.header("Monte Carlo Simulation")
-    st.markdown("Simulate 1,000 random scenarios to understand the range of possible outcomes.")
+    st.caption("Simulate 1,000 random scenarios to understand the range of possible outcomes.")
     
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -118,7 +109,7 @@ with tab_montecarlo:
     with col3:
         vacancy_vol = st.slider("Vacancy Volatility (%)", 1, 10, 3) / 100
     
-    if st.button("🎲 Run Simulation", type="primary"):
+    if st.button("Run Simulation", type="primary"):
         with st.spinner("Running 1,000 iterations..."):
             mc_result = analyzer.run_monte_carlo(
                 base_proforma.net_operating_income,
@@ -128,7 +119,7 @@ with tab_montecarlo:
                 iterations=1000
             )
         
-        st.success("Simulation complete!")
+        st.success("Simulation complete")
         
         col1, col2, col3 = st.columns(3)
         col1.metric("Expected NOI", f"${mc_result.mean_noi:,.0f}")
@@ -144,7 +135,7 @@ with tab_montecarlo:
         col5.metric("Best Case", f"${mc_result.best_case:,.0f}")
 
 with tab_environmental:
-    st.header("Environmental Risk Assessment")
+    st.header("Environmental Risk")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -158,27 +149,27 @@ with tab_environmental:
     st.subheader("Risk Factors")
     col1, col2, col3, col4 = st.columns(4)
     
-    col1.metric("🌊 Flood Risk", f"{risk_profile.flood.factor}/10", 
+    col1.metric("Flood Risk", f"{risk_profile.flood.factor}/10", 
                 risk_profile.flood.level.name)
-    col2.metric("🔥 Fire Risk", f"{risk_profile.fire.factor}/10",
+    col2.metric("Fire Risk", f"{risk_profile.fire.factor}/10",
                 risk_profile.fire.level.name)
-    col3.metric("🌡️ Heat Risk", f"{risk_profile.heat.factor}/10")
-    col4.metric("📊 Overall", f"{risk_profile.overall_score}/10")
+    col3.metric("Heat Risk", f"{risk_profile.heat.factor}/10")
+    col4.metric("Overall", f"{risk_profile.overall_score}/10")
     
     st.subheader("Financial Impact")
     col1, col2, col3 = st.columns(3)
     
     col1.metric("Insurance Premium Impact", f"+{risk_profile.insurance_impact_pct:.0f}%")
     col2.metric("FEMA Zone", risk_profile.flood.fema_zone)
-    col3.metric("☀️ Solar Potential", f"{risk_profile.solar_potential_kwh:,.0f} kWh/year")
+    col3.metric("Solar Potential", f"{risk_profile.solar_potential_kwh:,.0f} kWh/year")
     
     # Calculate solar revenue
-    solar_rate = 0.12  # $/kWh
+    solar_rate = 0.12
     solar_annual = risk_profile.solar_potential_kwh * solar_rate
-    st.success(f"💡 Potential solar revenue: **${solar_annual:,.0f}/year** at ${solar_rate}/kWh")
+    st.success(f"Potential solar revenue: ${solar_annual:,.0f}/year at ${solar_rate}/kWh")
     
     if risk_profile.fire.wui_zone:
-        st.warning("⚠️ Property is in Wildland-Urban Interface zone. Defensible space requirements apply.")
+        st.warning("Property is in Wildland-Urban Interface zone. Defensible space requirements apply.")
     
     if risk_profile.flood.factor >= 5:
-        st.warning(f"⚠️ Elevated flood risk. Consider flood insurance (FEMA Zone {risk_profile.flood.fema_zone}).")
+        st.warning(f"Elevated flood risk. Consider flood insurance (FEMA Zone {risk_profile.flood.fema_zone}).")
