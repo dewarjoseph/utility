@@ -52,9 +52,8 @@ class Worker:
         self._current_job: Optional[Job] = None
         self._shutdown_requested = False
         
-        # Register signal handlers
-        signal.signal(signal.SIGINT, self._handle_shutdown)
-        signal.signal(signal.SIGTERM, self._handle_shutdown)
+        # Note: Signal handlers removed - they only work in main thread
+        # When running as a daemon thread, the thread will terminate with the main process
         
         log.info(f"Worker {self.worker_id} initialized")
     
