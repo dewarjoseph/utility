@@ -6,7 +6,7 @@ Multi-page Streamlit application for managing land utility analysis projects.
 
 import streamlit as st
 import os
-import subprocess
+import threading
 from pathlib import Path
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -57,14 +57,25 @@ st.sidebar.metric("Projects", len(all_projects))
 
 st.sidebar.markdown("---")
 
+# Worker management (Singleton-like in session state)
+if "worker_thread" not in st.session_state:
+    st.session_state.worker_thread = None
+
 # Worker control
 if st.sidebar.button("🔄 Start Worker"):
-    subprocess.Popen(
-        ["python", "-m", "core.worker"],
-        cwd=os.getcwd(),
-        creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
-    )
-    st.sidebar.success("Worker started!")
+    if st.session_state.worker_thread is None or not st.session_state.worker_thread.is_alive():
+        from core.worker import Worker
+        
+        def run_worker():
+            worker = Worker()
+            worker.run()
+            
+        thread = threading.Thread(target=run_worker, daemon=True)
+        thread.start()
+        st.session_state.worker_thread = thread
+        st.sidebar.success("Worker started (Threaded)!")
+    else:
+        st.sidebar.info("Worker is already running.")
     st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════
