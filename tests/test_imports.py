@@ -8,7 +8,7 @@ def test_imports():
         "core",
         "loaders",
         "inference",
-        # "tools", # tools might have extra dependencies or side effects, uncomment if safe
+        "tools",
     ]
     
     for module_name in modules_to_test:
