@@ -162,15 +162,69 @@ with tab_gov:
     else:
         st.header(f"🗳️ Governance: {active_org.name}")
 
-        # Member Management (Simple for now)
-        with st.expander("Member Management"):
-            new_member = st.text_input("Add Member ID/Name")
-            if st.button("Add Member"):
-                active_org.voting_engine.add_member(new_member)
-                gm.save_organization(active_org)
-                st.success(f"Added member {new_member}")
+        # Member Management
+        with st.expander("Member Management", expanded=False):
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.subheader("Add Member")
+                new_member = st.text_input("Member ID/Name")
+                member_class = st.selectbox("Class", options=["General Member", "Founder", "Investor"])
+                if st.button("Add Member"):
+                    active_org.voting_engine.add_member(new_member, verified=False)
+                    gm.save_organization(active_org)
+                    st.success(f"Added {new_member}")
+                    st.rerun()
 
-            st.write(f"Total Members: {len(active_org.voting_engine.members)}")
+            with col2:
+                st.subheader("Verify Members")
+                st.caption("Only verified members can cast votes.")
+
+                # List members
+                members = active_org.voting_engine.members
+                if not members:
+                    st.info("No members yet.")
+                else:
+                    for m_id, is_ver in members.items():
+                        c1, c2, c3 = st.columns([2, 1, 1])
+                        c1.write(f"👤 {m_id}")
+                        c2.caption("Verified" if is_ver else "Unverified")
+                        if c3.button("Toggle", key=f"tog_{m_id}"):
+                            active_org.voting_engine.add_member(m_id, verified=not is_ver)
+                            gm.save_organization(active_org)
+                            st.rerun()
+
+        st.divider()
+
+        # Lobbying Ledger (New for Phase 2)
+        with st.expander("Lobbying Ledger (501c4 Compliance)"):
+            if "ledger" not in st.session_state:
+                st.session_state.ledger = []
+
+            col1, col2 = st.columns(2)
+            with col1:
+                l_prop = st.selectbox("Related Proposal", options=[p.title for p in active_org.voting_engine.proposals.values()])
+                l_hours = st.number_input("Hours Spent", min_value=0.0, step=0.5)
+                l_cost = st.number_input("Direct Cost ($)", min_value=0.0, step=10.0)
+                l_desc = st.text_input("Activity Description")
+
+                if st.button("Log Activity"):
+                    entry = {
+                        "date": datetime.now().strftime("%Y-%m-%d"),
+                        "proposal": l_prop,
+                        "hours": l_hours,
+                        "cost": l_cost,
+                        "desc": l_desc
+                    }
+                    st.session_state.ledger.append(entry)
+                    st.success("Logged!")
+
+            with col2:
+                if st.session_state.ledger:
+                    st.dataframe(st.session_state.ledger)
+                    total_hours = sum(x['hours'] for x in st.session_state.ledger)
+                    total_cost = sum(x['cost'] for x in st.session_state.ledger)
+                    st.metric("Total Hours", f"{total_hours:.1f}")
+                    st.metric("Total Cost", f"${total_cost:,.2f}")
 
         st.divider()
 
@@ -178,7 +232,7 @@ with tab_gov:
         col_list, col_create = st.columns([2, 1])
 
         with col_create:
-            st.subheader("New Proposal")
+            st.subheader("New Generic Proposal")
             with st.form("new_proposal"):
                 title = st.text_input("Title")
                 desc = st.text_area("Description")
@@ -205,42 +259,65 @@ with tab_gov:
             if not active_props and not draft_props:
                 st.info("No active proposals.")
 
-            for p in draft_props:
-                with st.container(border=True):
-                    st.write(f"📝 **DRAFT: {p.title}**")
-                    st.caption(p.description)
-                    if st.button("🚀 Launch Vote", key=f"launch_{p.id}"):
-                        active_org.voting_engine.activate_proposal(p.id)
-                        gm.save_organization(active_org)
-                        st.rerun()
+            # Drafts
+            if draft_props:
+                st.caption("Drafts")
+                for p in draft_props:
+                    with st.container(border=True):
+                        st.write(f"📝 **DRAFT: {p.title}**")
+                        st.caption(p.description)
 
-            for p in active_props:
-                with st.container(border=True):
-                    st.write(f"🗳️ **{p.title}**")
-                    st.caption(p.description)
+                        # Show financial snapshot if available (from auto-generation)
+                        if p.financial_summary:
+                            fin = p.financial_summary
+                            c1, c2 = st.columns(2)
+                            c1.metric("Est. Cost", f"${fin.get('total_development_cost', 0):,.0f}")
+                            c2.metric("ROI", f"{fin.get('yield_on_cost', 0)*100:.1f}%")
 
-                    # Voting Interface
-                    voter_id = st.selectbox("Vote as Member", options=list(active_org.voting_engine.members.keys()), key=f"voter_{p.id}")
+                        if st.button("🚀 Launch Vote", key=f"launch_{p.id}"):
+                            active_org.voting_engine.activate_proposal(p.id)
+                            gm.save_organization(active_org)
+                            st.rerun()
 
-                    if voter_id:
-                        alloc = active_org.voting_engine.get_voter_allocation(p.id, voter_id)
-                        st.write(f"Credits Remaining: {alloc.credits_remaining}")
+            # Active
+            if active_props:
+                st.caption("Voting Active")
+                for p in active_props:
+                    with st.container(border=True):
+                        st.write(f"🗳️ **{p.title}**")
+                        st.caption(p.description)
 
-                        votes = {}
-                        total_cost = 0
-                        for opt in p.options:
-                            v = st.number_input(f"Votes for '{opt}'", min_value=0, max_value=10, key=f"v_{p.id}_{opt}")
-                            votes[opt] = v
-                            total_cost += v*v
+                        # Show Community Impact
+                        if p.community_benefit_score:
+                            st.progress(p.community_benefit_score/10.0, text=f"Community Impact Score: {p.community_benefit_score:.1f}/10")
 
-                        st.write(f"Total Cost: {total_cost}")
+                        # Voting Interface
+                        voter_id = st.selectbox("Vote as Member", options=list(active_org.voting_engine.members.keys()), key=f"voter_{p.id}")
 
-                        if st.button("Cast Vote", key=f"cast_{p.id}"):
-                            if active_org.voting_engine.cast_vote(p.id, voter_id, votes):
-                                gm.save_organization(active_org)
-                                st.success("Vote cast!")
+                        if voter_id:
+                            # Check verification
+                            if not active_org.voting_engine.members.get(voter_id):
+                                st.error("⚠️ Member not verified. Contact admin.")
                             else:
-                                st.error("Insufficient credits or invalid vote.")
+                                alloc = active_org.voting_engine.get_voter_allocation(p.id, voter_id)
+                                st.write(f"Credits Remaining: {alloc.credits_remaining}")
+
+                                votes = {}
+                                total_cost = 0
+                                for opt in p.options:
+                                    v = st.number_input(f"Votes for '{opt}'", min_value=0, max_value=10, key=f"v_{p.id}_{opt}")
+                                    votes[opt] = v
+                                    total_cost += v*v
+
+                                st.write(f"Total Cost: {total_cost}")
+
+                                if st.button("Cast Vote", key=f"cast_{p.id}"):
+                                    if active_org.voting_engine.cast_vote(p.id, voter_id, votes):
+                                        gm.save_organization(active_org)
+                                        st.success("Vote cast!")
+                                        st.rerun()
+                                    else:
+                                        st.error("Insufficient credits.")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 3: AGENT OPERATIONS
@@ -295,7 +372,8 @@ with tab_agent:
                             proposal_id=f"lobby_{proj.id[:8]}",
                             title=title,
                             description=desc,
-                            options=options
+                            options=options,
+                            project_id=proj.id
                         )
                         gm.save_organization(active_org)
                         st.success(f"Agent drafted proposal: {title}")

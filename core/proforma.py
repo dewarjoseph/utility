@@ -3,9 +3,14 @@ Pro Forma Financial Engine - Basic development financial modeling.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from enum import Enum
+import logging
 
+if TYPE_CHECKING:
+    from core.project import Project
+
+log = logging.getLogger(__name__)
 
 class ProjectType(Enum):
     """Types of development projects."""
@@ -69,6 +74,7 @@ class ProFormaResult:
     stabilized_value: float = 0.0
     profit_margin: float = 0.0
     cost_per_unit: float = 0.0
+    cap_rate: float = 0.0 # From assumptions or derived
     
     # Cooperative metrics
     community_dividend_annual: float = 0.0
@@ -85,7 +91,9 @@ class ProFormaResult:
             'stabilized_value': self.stabilized_value,
             'profit_margin': self.profit_margin,
             'cost_per_unit': self.cost_per_unit,
+            'cap_rate': self.cap_rate,
             'community_dividend_annual': self.community_dividend_annual,
+            'affordability_index': self.affordability_index,
         }
 
 
@@ -97,6 +105,7 @@ class ProFormaEngine:
         result = ProFormaResult()
         costs = inputs.cost_assumptions
         revenue = inputs.revenue_assumptions
+        result.cap_rate = revenue.cap_rate
 
         # Calculate costs
         result.land_cost = inputs.lot_size_sqft * costs.land_cost_per_sqft
@@ -116,10 +125,15 @@ class ProFormaEngine:
         # Calculate returns
         if result.total_development_cost > 0:
             result.yield_on_cost = result.net_operating_income / result.total_development_cost
+
         if revenue.cap_rate > 0:
             result.stabilized_value = result.net_operating_income / revenue.cap_rate
+        else:
+            result.stabilized_value = 0.0
+
         if result.total_development_cost > 0:
             result.profit_margin = (result.stabilized_value - result.total_development_cost) / result.total_development_cost
+
         if inputs.num_units > 0:
             result.cost_per_unit = result.total_development_cost / inputs.num_units
 
@@ -128,11 +142,66 @@ class ProFormaEngine:
         result.community_dividend_annual = result.net_operating_income * (1 - debt_service_ratio)
         
         # Affordability: % of units that could be below market while breaking even
+        # Break-even income = Expenses + Debt Service
+        # If break-even is low compared to GPI, we have room for subsidies
         if result.gross_potential_income > 0:
             break_even_income = result.operating_expenses + (result.net_operating_income * debt_service_ratio)
+            # Affordability index represents the discount we can offer from market rent
             result.affordability_index = 1 - (break_even_income / result.gross_potential_income)
+        else:
+            result.affordability_index = 0.0
 
         return result
+
+    def generate_for_project(self, project: 'Project') -> Dict[str, Any]:
+        """
+        Generate a financial snapshot for a Land Utility Project.
+
+        This uses heuristics based on the project size and use-case
+        to estimate inputs for the pro forma.
+        """
+        # 1. Estimate lot size from bounds (km2 to sqft)
+        # 1 km2 = 10,763,910 sqft
+        # We assume the project is analyzing a specific parcel or area
+        # For a single "site", let's assume a standard 5 acre plot if scanning a large area,
+        # or the full area if it's small (< 10 acres).
+
+        total_sqft = project.bounds.area_sq_km * 10_763_910
+
+        # Cap at 10 acres (435,600 sqft) for a realistic single development proposal
+        # unless it's a massive industrial park.
+        assumed_lot_sqft = min(total_sqft, 435600)
+
+        # 2. Determine Use Case & Density (FAR)
+        use_case = project.settings.use_case
+        far = 1.0
+        project_type = ProjectType.MIXED_USE
+
+        if use_case == "general":
+            far = 0.8
+            project_type = ProjectType.INDUSTRIAL
+        elif "residential" in use_case or "community" in use_case:
+            far = 1.5
+            project_type = ProjectType.RESIDENTIAL
+        elif "manufacturing" in use_case or "fab" in use_case:
+            far = 0.6
+            project_type = ProjectType.INDUSTRIAL
+
+        buildable_sqft = assumed_lot_sqft * far
+
+        # 3. Create Inputs
+        inputs = ProFormaInputs(
+            lot_size_sqft=assumed_lot_sqft,
+            buildable_sqft=buildable_sqft,
+            project_type=project_type,
+            # Estimate units for residential (1000 sqft avg)
+            num_units=int(buildable_sqft / 1000) if project_type == ProjectType.RESIDENTIAL else 0
+        )
+
+        # 4. Calculate
+        result = self.calculate(inputs)
+
+        return result.to_dict()
 
     def quick_estimate(self, lot_sqft: float, far: float = 1.5, 
                        cost_per_sqft: float = 250.0) -> Dict[str, float]:

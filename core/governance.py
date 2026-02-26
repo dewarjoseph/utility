@@ -39,6 +39,11 @@ class Proposal:
     status: ProposalStatus = ProposalStatus.DRAFT
     minimum_participation: float = 0.25  # 25% of members must vote
     
+    # New fields for Civic Action
+    project_id: Optional[str] = None
+    financial_summary: Dict[str, Any] = field(default_factory=dict)
+    community_benefit_score: Optional[float] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             'id': self.id,
@@ -49,6 +54,9 @@ class Proposal:
             'closes_at': self.closes_at.isoformat() if self.closes_at else None,
             'status': self.status.value,
             'minimum_participation': self.minimum_participation,
+            'project_id': self.project_id,
+            'financial_summary': self.financial_summary,
+            'community_benefit_score': self.community_benefit_score,
         }
 
     @classmethod
@@ -61,7 +69,10 @@ class Proposal:
             created_at=datetime.fromisoformat(data['created_at']),
             closes_at=datetime.fromisoformat(data['closes_at']) if data.get('closes_at') else None,
             status=ProposalStatus(data['status']),
-            minimum_participation=data.get('minimum_participation', 0.25)
+            minimum_participation=data.get('minimum_participation', 0.25),
+            project_id=data.get('project_id'),
+            financial_summary=data.get('financial_summary', {}),
+            community_benefit_score=data.get('community_benefit_score'),
         )
 
 
@@ -167,7 +178,10 @@ class QuadraticVotingEngine:
         proposal_id: str,
         title: str,
         description: str,
-        options: List[str]
+        options: List[str],
+        project_id: str = None,
+        financial_summary: Dict = None,
+        community_benefit_score: float = None,
     ) -> Proposal:
         """Create a new voting proposal."""
         proposal = Proposal(
@@ -175,6 +189,9 @@ class QuadraticVotingEngine:
             title=title,
             description=description,
             options=options,
+            project_id=project_id,
+            financial_summary=financial_summary or {},
+            community_benefit_score=community_benefit_score,
         )
         self.proposals[proposal_id] = proposal
         self.allocations[proposal_id] = {}
@@ -211,6 +228,11 @@ class QuadraticVotingEngine:
         if proposal_id not in self.proposals:
             return False
         
+        # Verify member exists and is verified
+        is_verified = self.members.get(voter_id, False)
+        if not is_verified:
+            return False
+
         proposal = self.proposals[proposal_id]
         if proposal.status != ProposalStatus.ACTIVE:
             return False
