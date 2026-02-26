@@ -5,7 +5,6 @@ Provides population, workforce, and economic data for locations.
 Uses Census Bureau API with fallback to statistical estimates.
 """
 
-import requests
 import logging
 import os
 import sqlite3
