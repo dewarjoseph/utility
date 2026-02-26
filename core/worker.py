@@ -150,6 +150,10 @@ class Worker:
         
         points_collected = project.points_collected
         
+        # Initialize stats
+        total_score = project.stats.get('total_score', 0.0)
+        max_score = project.stats.get('max_score', 0.0)
+
         log.info(f"Starting scan for {project.name}: "
                  f"{points_collected}/{max_points} points, "
                  f"bounds={bounds.area_sq_km:.2f} sq km")
@@ -177,6 +181,10 @@ class Worker:
                 features = self._generate_features(lat, lon)
                 score = self._calculate_score(features, settings.scoring_rules, settings.use_case)
                 
+                # Update stats
+                total_score += score
+                max_score = max(max_score, score)
+
                 # Save the result
                 self._save_point(project, lat, lon, features, score)
                 points_collected += 1
@@ -186,6 +194,11 @@ class Worker:
             
             # Update project
             project.points_collected = points_collected
+            project.stats['total_score'] = total_score
+            project.stats['max_score'] = max_score
+            if points_collected > 0:
+                project.stats['average_score'] = total_score / points_collected
+
             project.save()
             
             # Wait before next cycle

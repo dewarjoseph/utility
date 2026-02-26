@@ -288,6 +288,9 @@ class Project:
     error_message: Optional[str] = None
     """If status is ERROR, this contains the error details."""
     
+    stats: Dict[str, Any] = field(default_factory=dict)
+    """Summary statistics (e.g., average_score, max_score)."""
+
     # Derived paths
     @property
     def data_dir(self) -> Path:
@@ -327,6 +330,7 @@ class Project:
             "updated_at": self.updated_at,
             "points_collected": self.points_collected,
             "error_message": self.error_message,
+            "stats": self.stats,
         }
     
     @classmethod
@@ -343,6 +347,7 @@ class Project:
             updated_at=data.get("updated_at", datetime.now().isoformat()),
             points_collected=data.get("points_collected", 0),
             error_message=data.get("error_message"),
+            stats=data.get("stats", {}),
         )
     
     def save(self):

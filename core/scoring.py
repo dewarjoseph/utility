@@ -28,6 +28,7 @@ class UseCase(Enum):
     WAREHOUSE = "warehouse_distribution"
     MANUFACTURING = "light_manufacturing"
     AGRICULTURAL = "agricultural_processing"
+    COMMUNITY_CENTER = "community_center"
 
 
 @dataclass
@@ -188,6 +189,34 @@ PROFILES = {
             ("is_industrial", "has_power_nearby"): 1.5,
             ("has_road", "highway_nearby"): 1.0,
         },
+    ),
+
+    UseCase.COMMUNITY_CENTER: UseCaseProfile(
+        name="Community Center",
+        description="Optimized for social welfare and community hubs",
+        feature_weights={
+            # Positive
+            "is_residential": 2.0,      # Near people
+            "has_road": 2.0,            # Accessible
+            "urban_area": 1.5,          # Density
+            "has_water": 1.0,
+            "low_elevation": 0.5,       # Easier access
+
+            # Negative
+            "is_industrial": -2.0,      # Pollution/Noise
+            "flood_risk": -3.0,         # Safety
+            "high_elevation": -1.5,     # Hard to access
+        },
+        synergies={
+            ("is_residential", "urban_area"): 1.5,     # High impact
+            ("has_road", "urban_area"): 1.0,           # Accessibility
+            ("is_residential", "low_elevation"): 0.5,  # Safe & accessible
+        },
+        anti_synergies={
+            ("is_residential", "is_industrial"): -2.5, # Incompatible
+            ("urban_area", "flood_risk"): -2.0,        # High risk
+        },
+        disqualifiers=["flood_risk", "is_industrial"],
     ),
 }
 
