@@ -13,6 +13,7 @@ import sqlite3
 import json
 import hashlib
 import math
+import threading
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, asdict
 import logging
@@ -64,24 +65,25 @@ class OSMCache:
     
     def __init__(self, db_path: str = "osm_cache.db"):
         self.db_path = db_path
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._init_db()
     
     def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS osm_cache (
-                query_hash TEXT PRIMARY KEY,
-                result_json TEXT,
-                created_at REAL
-            )
-        """)
-        # Add expiration cleanup
-        conn.execute("""
-            DELETE FROM osm_cache 
-            WHERE created_at < ?
-        """, (time.time() - 30 * 24 * 60 * 60,))  # 30 day expiration
-        conn.commit()
-        conn.close()
+        with self._lock:
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS osm_cache (
+                    query_hash TEXT PRIMARY KEY,
+                    result_json TEXT,
+                    created_at REAL
+                )
+            """)
+            # Add expiration cleanup
+            self._conn.execute("""
+                DELETE FROM osm_cache
+                WHERE created_at < ?
+            """, (time.time() - 30 * 24 * 60 * 60,))  # 30 day expiration
+            self._conn.commit()
     
     def _hash_query(self, lat: float, lon: float, radius: int) -> str:
         # Round to 4 decimal places (~10m) for cache key
@@ -89,26 +91,37 @@ class OSMCache:
         return hashlib.md5(key.encode()).hexdigest()
     
     def get(self, lat: float, lon: float, radius: int) -> Optional[Dict]:
-        conn = sqlite3.connect(self.db_path)
-        row = conn.execute(
-            "SELECT result_json FROM osm_cache WHERE query_hash = ?",
-            (self._hash_query(lat, lon, radius),)
-        ).fetchone()
-        conn.close()
-        if row:
-            return json.loads(row[0])
-        return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT result_json FROM osm_cache WHERE query_hash = ?",
+                (self._hash_query(lat, lon, radius),)
+            ).fetchone()
+            if row:
+                return json.loads(row[0])
+            return None
     
     def set(self, lat: float, lon: float, radius: int, result: Dict):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute(
-            """INSERT OR REPLACE INTO osm_cache 
-               (query_hash, result_json, created_at) 
-               VALUES (?, ?, ?)""",
-            (self._hash_query(lat, lon, radius), json.dumps(result), time.time())
-        )
-        conn.commit()
-        conn.close()
+        with self._lock:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO osm_cache
+                   (query_hash, result_json, created_at)
+                   VALUES (?, ?, ?)""",
+                (self._hash_query(lat, lon, radius), json.dumps(result), time.time())
+            )
+            self._conn.commit()
+
+    def close(self):
+        """Close the database connection."""
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class OSMLoader:
