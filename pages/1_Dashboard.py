@@ -115,6 +115,7 @@ with tab_data:
         st.plotly_chart(fig_hist, use_container_width=True)
 
         st.subheader("Feature Correlations")
+        # Compute correlation with score
         numeric_df = df.select_dtypes(include=['float64', 'int64', 'bool'])
         corr = numeric_df.corr()['score'].sort_values(ascending=False)
         st.bar_chart(corr.drop('score'))
@@ -123,14 +124,16 @@ with tab_data:
             st.dataframe(df)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TAB 3: CIVIC ACTION
+# TAB 3: TAKE ACTION (New for Phase 2)
 # ═══════════════════════════════════════════════════════════════════════════
 with tab_action:
     st.header("🏛️ Civic Action")
+    st.markdown("Transition from analysis to action by proposing this project to your organization.")
     
+    # 1. Select Organization
     orgs = gm.list_organizations()
     if not orgs:
-        st.warning("No organizations found.")
+        st.warning("No organizations found. Please create one in the 'Organization' page first.")
     else:
         selected_org_id = st.selectbox(
             "Propose to Organization",
@@ -142,41 +145,65 @@ with tab_action:
         st.divider()
         col1, col2 = st.columns(2)
         
+        col1, col2 = st.columns(2)
+        
         with col1:
             st.subheader("📋 Proposal Preview")
             prop_title = st.text_input("Proposal Title", value=f"Develop: {project.name}")
+            
+            # Auto-generate Statement of Purpose
+            mission_statement = "advancing community welfare" # Default
+            # In a real app, we'd pull this from the Bylaws/Charter of the org
+            
             default_desc = (
                 f"Proposal to acquire/develop the site analyzed in '{project.name}'.\n\n"
                 f"**Statement of Purpose:**\n"
-                f"This project aligns with {target_org.name}'s mission.\n"
-                f"Avg Score: {project.stats.get('average_score', 0):.1f}."
+                f"This project aligns with {target_org.name}'s mission by {mission_statement}.\n"
+                f"Based on analysis of {project.points_collected} points with an average score of "
+                f"{project.stats.get('average_score', 0):.1f}."
             )
             prop_desc = st.text_area("Proposal Description", value=default_desc, height=200)
         
         with col2:
-            st.subheader("💰 Estimates")
+            st.subheader("💰 Financial & Impact Snapshot")
+
             if st.button("🔄 Generate Estimates"):
                 from core.proforma import get_proforma_engine
                 from core.scoring import get_scorer, UseCase
 
+                # Financials
                 pe = get_proforma_engine()
                 financials = pe.generate_for_project(project)
                 st.session_state['financial_est'] = financials
 
+                # Community Score
                 scorer = get_scorer(UseCase.COMMUNITY_CENTER)
-                if not df.empty:
+                # Use average features from collected data as proxy for "site" features
+                # In reality, we'd pick the *best* point.
+                if 'df' in locals() and not df.empty:
+                    # Get features of highest scoring point
                     best_point = df.loc[df['score'].idxmax()].to_dict()
                     impact_score = scorer.score(best_point)
                     st.session_state['impact_est'] = impact_score
+                else:
+                    st.session_state['impact_est'] = 0.0
 
             if 'financial_est' in st.session_state:
                 fin = st.session_state['financial_est']
-                st.metric("Est. Cost", f"${fin['total_development_cost']:,.0f}")
-                st.metric("ROI", f"{fin['yield_on_cost']*100:.1f}%")
+                st.metric("Est. Development Cost", f"${fin['total_development_cost']:,.0f}")
+                st.metric("Est. Annual Dividend", f"${fin['community_dividend_annual']:,.0f}")
+                st.metric("Projected ROI", f"{fin['yield_on_cost']*100:.1f}%")
+
             if 'impact_est' in st.session_state:
-                st.metric("Community Score", f"{st.session_state['impact_est']:.1f}/10")
+                st.metric("Community Benefit Score", f"{st.session_state['impact_est']:.1f}/10")
         
-        if st.button("🚀 Submit Proposal", type="primary"):
+        st.divider()
+        
+        if st.button("🚀 Submit Proposal to Organization", type="primary"):
+            # Create Proposal
+            financial_summary = st.session_state.get('financial_est', {})
+            impact_score = st.session_state.get('impact_est', 0.0)
+
             proposal = target_org.voting_engine.create_proposal(
                 proposal_id=f"prop_{project.id[:6]}_{len(target_org.voting_engine.proposals)}",
                 title=prop_title,
