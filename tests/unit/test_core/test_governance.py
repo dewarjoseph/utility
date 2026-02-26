@@ -54,6 +54,7 @@ class TestQuadraticVotingEngine:
 
     def test_cast_vote(self):
         engine = QuadraticVotingEngine()
+        engine.add_member("voter1", verified=True)  # Must be verified
         engine.create_proposal("p1", "Test", "Desc", ["A", "B"])
         engine.activate_proposal("p1")
         
@@ -64,8 +65,18 @@ class TestQuadraticVotingEngine:
         assert alloc.allocations["A"] == 5
         assert alloc.allocations["B"] == 3
 
+    def test_cast_vote_unverified(self):
+        engine = QuadraticVotingEngine()
+        engine.add_member("voter1", verified=False)
+        engine.create_proposal("p1", "Test", "Desc", ["A", "B"])
+        engine.activate_proposal("p1")
+
+        success = engine.cast_vote("p1", "voter1", {"A": 5})
+        assert not success
+
     def test_cast_vote_exceeds_credits(self):
         engine = QuadraticVotingEngine(credits_per_voter=100)
+        engine.add_member("voter1", verified=True)
         engine.create_proposal("p1", "Test", "Desc", ["A", "B"])
         engine.activate_proposal("p1")
         
