@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 from enum import Enum
 import random
+import hashlib
 
 
 class APIProvider(Enum):
@@ -161,10 +162,22 @@ class APIIntegrationLayer:
         """Check if a provider is enabled."""
         config = self.configs.get(provider)
         return config and config.enabled and config.api_key
+
+    def _get_secure_seed(self, lat: float, lon: float) -> int:
+        """Generate a deterministic, secure seed based on location."""
+        # Create a unique string for the location
+        data = f"{lat:.6f},{lon:.6f}".encode('utf-8')
+        # Use SHA-256 for a secure hash
+        hash_obj = hashlib.sha256(data)
+        # Convert the hash (hex) to an integer
+        # We take the first 8 bytes (16 hex chars) which is plenty for a seed
+        seed_int = int(hash_obj.hexdigest()[:16], 16)
+        return seed_int
     
     def _mock_zoning(self, lat: float, lon: float) -> ZoningAPIResponse:
         """Generate mock zoning data."""
-        random.seed(int(abs(lat * 1000) + abs(lon * 1000)))
+        # Use a local random instance to avoid global state modification
+        rng = random.Random(self._get_secure_seed(lat, lon))
         
         zones = [
             ("R-1", "Single Family Residential", ["single_family", "adu"]),
@@ -174,22 +187,22 @@ class APIIntegrationLayer:
             ("C-2", "Community Commercial", ["retail", "office", "hotel", "entertainment"]),
         ]
         
-        zone = random.choice(zones)
+        zone = rng.choice(zones)
         
         return ZoningAPIResponse(
             zone_code=zone[0],
             zone_name=zone[1],
             allowed_uses=zone[2],
-            max_height_ft=random.choice([30, 35, 45, 55, 65]),
-            max_far=random.choice([0.5, 0.6, 1.0, 1.5, 2.0]),
-            max_lot_coverage=random.choice([0.4, 0.45, 0.5, 0.6]),
+            max_height_ft=rng.choice([30, 35, 45, 55, 65]),
+            max_far=rng.choice([0.5, 0.6, 1.0, 1.5, 2.0]),
+            max_lot_coverage=rng.choice([0.4, 0.45, 0.5, 0.6]),
             setbacks={
-                'front': random.choice([15, 20, 25]),
-                'side': random.choice([5, 7, 10]),
-                'rear': random.choice([10, 15, 20]),
+                'front': rng.choice([15, 20, 25]),
+                'side': rng.choice([5, 7, 10]),
+                'rear': rng.choice([10, 15, 20]),
             },
-            parking_ratio=random.choice([1.0, 1.5, 2.0]),
-            overlay_districts=random.choice([[], ["TOD"], ["Historic"]]),
+            parking_ratio=rng.choice([1.0, 1.5, 2.0]),
+            overlay_districts=rng.choice([[], ["TOD"], ["Historic"]]),
             source=APIProvider.GRIDICS,
         )
     
@@ -201,7 +214,8 @@ class APIIntegrationLayer:
         sqft: float
     ) -> ConstructionCostResponse:
         """Generate mock construction cost data."""
-        random.seed(int(abs(lat * 1000) + abs(lon * 1000)))
+        # Use a local random instance to avoid global state modification
+        rng = random.Random(self._get_secure_seed(lat, lon))
         
         # Base costs by type
         base_costs = {
@@ -217,7 +231,7 @@ class APIIntegrationLayer:
         is_california = -125 < lon < -114 and 32 < lat < 42
         location_factor = 1.35 if is_california else 1.0
         
-        cost_per_sqft = base * location_factor * random.uniform(0.9, 1.1)
+        cost_per_sqft = base * location_factor * rng.uniform(0.9, 1.1)
         
         return ConstructionCostResponse(
             cost_per_sqft=round(cost_per_sqft, 2),
@@ -241,17 +255,18 @@ class APIIntegrationLayer:
     
     def _mock_climate_risk(self, lat: float, lon: float) -> ClimateRiskResponse:
         """Generate mock climate risk data."""
-        random.seed(int(abs(lat * 1000) + abs(lon * 1000)))
+        # Use a local random instance to avoid global state modification
+        rng = random.Random(self._get_secure_seed(lat, lon))
         
         # Coastal = flood risk, California = fire risk, South = heat
         is_coastal = abs(lon) > 120
         is_california = -125 < lon < -114 and 32 < lat < 42
         is_southern = lat < 38
         
-        flood = random.randint(1, 4) + (3 if is_coastal else 0)
-        fire = random.randint(1, 4) + (4 if is_california else 0)
-        heat = random.randint(2, 5) + (3 if is_southern else 0)
-        wind = random.randint(2, 6)
+        flood = rng.randint(1, 4) + (3 if is_coastal else 0)
+        fire = rng.randint(1, 4) + (4 if is_california else 0)
+        heat = rng.randint(2, 5) + (3 if is_southern else 0)
+        wind = rng.randint(2, 6)
         
         flood = min(10, flood)
         fire = min(10, fire)
