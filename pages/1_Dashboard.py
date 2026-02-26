@@ -9,6 +9,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from core.project import ProjectManager, Project
 from core.governance import GovernanceManager
+from inference.ml_engine import MLEngine
+from inference.predictor import UtilityPredictor
 
 # Initialize managers
 pm = ProjectManager()
@@ -55,65 +57,59 @@ if project.stats:
 st.title(f"📍 {project.name}")
 st.caption(project.description)
 
-tab_map, tab_data, tab_action = st.tabs(["🗺️ Map Analysis", "📊 Data Explorer", "🏛️ Take Action"])
+tab_map, tab_data, tab_action, tab_ml = st.tabs([
+    "🗺️ Map Analysis", "📊 Data Explorer", "🏛️ Civic Action", "🔮 Predictive Strategy"
+])
+
+# Load data helper
+df = pd.DataFrame()
+if project.training_data_path.exists():
+    try:
+        data = []
+        with open(project.training_data_path, "r") as f:
+            for line in f:
+                data.append(json.loads(line))
+        if data:
+            rows = []
+            for item in data:
+                row = {
+                    "lat": item["location"]["lat"],
+                    "lon": item["location"]["lon"],
+                    "score": item["expert_label"]["gross_utility_score"],
+                }
+                row.update(item["features_raw"])
+                rows.append(row)
+            df = pd.DataFrame(rows)
+    except:
+        pass
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 1: MAP ANALYSIS
 # ═══════════════════════════════════════════════════════════════════════════
 with tab_map:
-    # Load data
-    data_path = project.training_data_path
-    if not data_path.exists():
-        st.warning("No data collected yet. Start a scan from the Home page.")
+    if df.empty:
+        st.warning("No data collected yet.")
     else:
-        try:
-            # Read JSONL file
-            data = []
-            with open(data_path, "r") as f:
-                for line in f:
-                    data.append(json.loads(line))
-
-            if not data:
-                st.warning("Dataset is empty.")
-            else:
-                # Convert to DataFrame
-                rows = []
-                for item in data:
-                    row = {
-                        "lat": item["location"]["lat"],
-                        "lon": item["location"]["lon"],
-                        "score": item["expert_label"]["gross_utility_score"],
-                    }
-                    # Add features
-                    row.update(item["features_raw"])
-                    rows.append(row)
-
-                df = pd.DataFrame(rows)
-
-                # Map Visualization
-                fig = px.scatter_mapbox(
-                    df,
-                    lat="lat",
-                    lon="lon",
-                    color="score",
-                    size="score",
-                    color_continuous_scale="Viridis",
-                    size_max=15,
-                    zoom=12,
-                    mapbox_style="carto-positron",
-                    hover_data=list(df.columns)
-                )
-                fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=600)
-                st.plotly_chart(fig, use_container_width=True)
-
-        except Exception as e:
-            st.error(f"Error loading data: {e}")
+        fig = px.scatter_mapbox(
+            df,
+            lat="lat",
+            lon="lon",
+            color="score",
+            size="score",
+            color_continuous_scale="Viridis",
+            size_max=15,
+            zoom=12,
+            mapbox_style="carto-positron",
+            hover_data=list(df.columns)
+        )
+        fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0}, height=600)
+        st.plotly_chart(fig, use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 2: DATA EXPLORER
 # ═══════════════════════════════════════════════════════════════════════════
 with tab_data:
-    if 'df' in locals():
+    if not df.empty:
         st.subheader("Distribution of Scores")
         fig_hist = px.histogram(df, x="score", nbins=20, title="Utility Score Distribution")
         st.plotly_chart(fig_hist, use_container_width=True)
@@ -147,6 +143,7 @@ with tab_action:
         target_org = gm.get_organization(selected_org_id)
         
         st.divider()
+        col1, col2 = st.columns(2)
         
         col1, col2 = st.columns(2)
         
@@ -211,12 +208,56 @@ with tab_action:
                 proposal_id=f"prop_{project.id[:6]}_{len(target_org.voting_engine.proposals)}",
                 title=prop_title,
                 description=prop_desc,
-                options=["Approve", "Reject", "Request Revision"],
+                options=["Approve", "Reject"],
                 project_id=project.id,
-                financial_summary=financial_summary,
-                community_benefit_score=impact_score
+                financial_summary=st.session_state.get('financial_est', {}),
+                community_benefit_score=st.session_state.get('impact_est', 0.0)
             )
-
             gm.save_organization(target_org)
-            st.success(f"Proposal '{prop_title}' submitted to {target_org.name}!")
-            st.info("Go to the **Organization** page to view and vote.")
+            st.success("Submitted!")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TAB 4: PREDICTIVE STRATEGY (Phase 3)
+# ═══════════════════════════════════════════════════════════════════════════
+with tab_ml:
+    st.header("🔮 Predictive Strategy")
+    st.markdown("Train models to predict high-value zones beyond the scanned area.")
+
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Model Training")
+        if df.empty:
+            st.info("Collect more data to train the model.")
+        else:
+            st.write(f"Training Data: {len(df)} samples")
+
+            if st.button("🧠 Train ML Model"):
+                # Use project ID specific model dir
+                model_dir = str(project.data_dir)
+                engine = MLEngine(model_dir=model_dir)
+
+                # Mock training data load since MLEngine reads from file
+                with st.spinner("Training best model..."):
+                    model = engine.auto_select_model(min_samples=10) # Low min for demo
+
+                if model:
+                    st.success(f"Trained {engine.best_model_name} (Score: {engine.best_score:.2f})")
+                    st.session_state['trained_model'] = engine
+                else:
+                    st.error("Training failed. Need more diverse data.")
+    
+    with col2:
+        st.subheader("Feature Importance")
+        if 'trained_model' in st.session_state:
+            engine = st.session_state['trained_model']
+            importance = engine.get_feature_importance()
+            if importance:
+                # Convert to dataframe for chart
+                imp_df = pd.DataFrame(list(importance.items()), columns=['Feature', 'Importance'])
+                imp_df = imp_df.sort_values('Importance', ascending=True)
+                st.plotly_chart(px.bar(imp_df, x='Importance', y='Feature', orientation='h'))
+            else:
+                st.info("Feature importance not available for this model.")
+        else:
+            st.caption("Train a model to see feature drivers.")

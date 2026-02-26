@@ -13,10 +13,22 @@ from core.bylaws import (
 )
 from core.governance import GovernanceManager, ProposalStatus
 from core.project import ProjectManager, ProjectStatus
+from core.deal_room import get_deal_room, DealStatus, InvestmentType, InvestorStatus
+from core.revenue_share import get_revenue_ledger
+from core.sensitivity import get_sensitivity_analyzer
 
 # Initialize Managers
 gm = GovernanceManager()
 pm = ProjectManager()
+
+# Session State Persistence for Demo (In real app, these would be databases)
+if 'deal_room' not in st.session_state:
+    st.session_state.deal_room = get_deal_room()
+if 'revenue_ledger' not in st.session_state:
+    st.session_state.revenue_ledger = get_revenue_ledger()
+
+deal_room = st.session_state.deal_room
+ledger = st.session_state.revenue_ledger
 
 st.set_page_config(
     page_title="Organization Manager",
@@ -53,7 +65,9 @@ else:
 # ═══════════════════════════════════════════════════════════════════════════
 # MAIN TABS
 # ═══════════════════════════════════════════════════════════════════════════
-tab_inc, tab_gov, tab_agent = st.tabs(["📝 Incorporation Studio", "🗳️ Command Center", "🤖 Agent Operations"])
+tab_inc, tab_gov, tab_deals, tab_treasury, tab_agent = st.tabs([
+    "📝 Incorporation", "🗳️ Governance", "🤝 Deal Room", "💰 Treasury", "🤖 Agent"
+])
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 1: INCORPORATION STUDIO
@@ -171,6 +185,8 @@ with tab_gov:
                 member_class = st.selectbox("Class", options=["General Member", "Founder", "Investor"])
                 if st.button("Add Member"):
                     active_org.voting_engine.add_member(new_member, verified=False)
+                    # Add to ledger too
+                    ledger.add_member(new_member, new_member)
                     gm.save_organization(active_org)
                     st.success(f"Added {new_member}")
                     st.rerun()
@@ -195,10 +211,10 @@ with tab_gov:
 
         st.divider()
 
-        # Lobbying Ledger (New for Phase 2)
+        # Lobbying Ledger (Phase 2)
         with st.expander("Lobbying Ledger (501c4 Compliance)"):
-            if "ledger" not in st.session_state:
-                st.session_state.ledger = []
+            if "ledger_entries" not in st.session_state:
+                st.session_state.ledger_entries = []
 
             col1, col2 = st.columns(2)
             with col1:
@@ -215,14 +231,14 @@ with tab_gov:
                         "cost": l_cost,
                         "desc": l_desc
                     }
-                    st.session_state.ledger.append(entry)
+                    st.session_state.ledger_entries.append(entry)
                     st.success("Logged!")
 
             with col2:
-                if st.session_state.ledger:
-                    st.dataframe(st.session_state.ledger)
-                    total_hours = sum(x['hours'] for x in st.session_state.ledger)
-                    total_cost = sum(x['cost'] for x in st.session_state.ledger)
+                if st.session_state.ledger_entries:
+                    st.dataframe(st.session_state.ledger_entries)
+                    total_hours = sum(x['hours'] for x in st.session_state.ledger_entries)
+                    total_cost = sum(x['cost'] for x in st.session_state.ledger_entries)
                     st.metric("Total Hours", f"{total_hours:.1f}")
                     st.metric("Total Cost", f"${total_cost:,.2f}")
 
@@ -291,6 +307,27 @@ with tab_gov:
                         if p.community_benefit_score:
                             st.progress(p.community_benefit_score/10.0, text=f"Community Impact Score: {p.community_benefit_score:.1f}/10")
 
+                        # Sensitivity Analysis (Phase 3)
+                        if p.financial_summary:
+                            with st.expander("📉 Stress Test (Sensitivity Analysis)"):
+                                sa = get_sensitivity_analyzer()
+                                # Adapt dict to flat inputs
+                                base_inputs = {
+                                    "interest_rate": 0.05,
+                                    "loan_amount": p.financial_summary.get('total_development_cost', 0) * 0.7,
+                                    "noi": p.financial_summary.get('net_operating_income', 0),
+                                    "construction_cost": p.financial_summary.get('total_development_cost', 0),
+                                    "gross_income": p.financial_summary.get('gross_potential_income', 0)
+                                }
+                                scenarios = sa.generate_scenario_matrix(base_inputs)
+
+                                # Show top 3 risks
+                                for s in scenarios[:3]:
+                                    st.markdown(f"**{s.scenario.name}**")
+                                    st.caption(s.recommendation)
+                                    color = "red" if s.impact_pct < 0 else "green"
+                                    st.markdown(f":{color}[Impact: {s.impact_pct:+.1f}%]")
+
                         # Voting Interface
                         voter_id = st.selectbox("Vote as Member", options=list(active_org.voting_engine.members.keys()), key=f"voter_{p.id}")
 
@@ -319,8 +356,103 @@ with tab_gov:
                                     else:
                                         st.error("Insufficient credits.")
 
+                        # Close Vote (If Admin)
+                        if st.button("End Voting & Tally", key=f"close_{p.id}"):
+                            result = active_org.voting_engine.close_proposal(p.id)
+                            gm.save_organization(active_org)
+                            st.success(f"Vote Closed! Winner: {result.winner}")
+
+                            # Auto-create Deal if passed (Phase 3)
+                            if result.passed and result.winner == "Approve" and p.project_id:
+                                deal = deal_room.create_deal(
+                                    name=p.title,
+                                    description=p.description
+                                )
+                                # Copy financials
+                                if p.financial_summary:
+                                    deal.financials.total_project_cost = p.financial_summary.get('total_development_cost', 0)
+                                    deal.financials.equity_required = deal.financials.total_project_cost * 0.3 # Assume 30% equity
+                                st.info("🎉 Deal created in Deal Room!")
+                            st.rerun()
+
 # ═══════════════════════════════════════════════════════════════════════════
-# TAB 3: AGENT OPERATIONS
+# TAB 3: DEAL ROOM (Phase 3)
+# ═══════════════════════════════════════════════════════════════════════════
+with tab_deals:
+    st.header("🤝 Deal Room")
+    st.markdown("Manage active investments and capital formation.")
+
+    deals = deal_room.get_all_deals()
+    if not deals:
+        st.info("No active deals. Pass a proposal to create a deal.")
+    else:
+        for deal_data in deals:
+            deal_id = deal_data['id']
+            deal = deal_room.deals[deal_id]
+
+            with st.expander(f"💼 {deal.name} ({deal.status.value})"):
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Equity Goal", f"${deal.financials.equity_required:,.0f}")
+                c2.metric("Raised", f"${deal.total_raised:,.0f}")
+                c3.progress(deal.funding_progress / 100, text=f"{deal.funding_progress:.1f}% Funded")
+
+                # Investor List
+                st.subheader("Investors")
+                if deal.commitments:
+                    for c in deal.commitments:
+                        st.text(f"{c.investor_name}: ${c.amount:,.0f} ({c.status.value})")
+                else:
+                    st.caption("No investors yet.")
+
+                # Add Commitment
+                with st.form(f"invest_{deal_id}"):
+                    inv_name = st.text_input("Investor Name")
+                    inv_amt = st.number_input("Amount", min_value=1000.0)
+                    if st.form_submit_button("Record Commitment"):
+                        deal_room.add_commitment(deal_id, inv_name, "test@example.com", inv_amt)
+                        st.success("Commitment added!")
+                        st.rerun()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TAB 4: TREASURY (Phase 3)
+# ═══════════════════════════════════════════════════════════════════════════
+with tab_treasury:
+    st.header("💰 Treasury & Dividends")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.subheader("Member Accounts")
+        members = ledger.members.values()
+        if not members:
+            st.info("No member accounts found.")
+        else:
+            data = [m.to_dict() for m in members]
+            st.dataframe(data)
+
+    with col2:
+        st.subheader("Actions")
+
+        # Record Revenue
+        with st.form("rev_form"):
+            rev_amt = st.number_input("Record Incoming Revenue ($)", min_value=0.0)
+            if st.form_submit_button("Process Revenue"):
+                payments = ledger.process_revenue(rev_amt)
+                st.success(f"Processed! Payments: {payments}")
+                st.rerun()
+
+        # Distribute Dividends
+        with st.form("div_form"):
+            surplus = st.number_input("Declare Surplus ($)", min_value=0.0)
+            if st.form_submit_button("Distribute Patronage"):
+                # Simple patronage: equal share for now
+                patronage = {m_id: 1.0 for m_id in ledger.members}
+                divs = ledger.calculate_patronage_dividends(surplus, patronage)
+                st.success(f"Distributed: {divs}")
+                st.rerun()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TAB 5: AGENT OPERATIONS (Existing)
 # ═══════════════════════════════════════════════════════════════════════════
 with tab_agent:
     if not active_org:
@@ -340,14 +472,11 @@ with tab_agent:
             avg_score = proj.stats.get('average_score', 0)
             threshold = proj.settings.high_value_threshold
 
-            # Logic: Must have collected points and average score >= threshold
-            # OR just show all for demo purposes if no stats yet
             if proj.points_collected > 0 and avg_score >= threshold:
                 high_value_projects.append(proj)
             elif proj.points_collected > 0:
-                pass # Skip low value projects
+                pass
             else:
-                # Include new projects that haven't been scanned yet so user can see them
                 high_value_projects.append(proj)
 
         if not high_value_projects:
@@ -358,15 +487,10 @@ with tab_agent:
                     st.write(proj.description)
                     st.caption(f"ID: {proj.id}")
 
-                    # Agent Action: Auto-Draft Proposal
                     if st.button("🤖 Draft Lobbying Proposal", key=f"agent_{proj.id}"):
                         title = f"Lobbying Campaign: {proj.name}"
-                        desc = (
-                            f"Proposal to allocate resources to lobby for the development of {proj.name}. "
-                            f"Targeting sustainable development in accordance with our mission: {active_org.name}. "
-                            f"Project ID: {proj.id}"
-                        )
-                        options = ["Approve Funding", "Reject", "Request More Info"]
+                        desc = f"Proposal for {proj.name}. Mission aligned."
+                        options = ["Approve Funding", "Reject"]
 
                         prop = active_org.voting_engine.create_proposal(
                             proposal_id=f"lobby_{proj.id[:8]}",
