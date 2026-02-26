@@ -17,6 +17,8 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# Constants
+INDEX_DB_PATH = Path("projects") / "index.db"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # BOUNDING BOX
@@ -351,12 +353,64 @@ class Project:
         )
     
     def save(self):
-        """Save project to disk."""
+        """Save project to disk and update index."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.updated_at = datetime.now().isoformat()
+
+        # Save JSON to file
         with open(self.config_path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
         log.info(f"Saved project {self.id} to {self.config_path}")
+
+        # Update SQLite Index
+        try:
+            self._update_index()
+        except Exception as e:
+            log.error(f"Failed to update project index: {e}")
+
+    def _update_index(self):
+        """Update the central SQLite index with this project's metadata."""
+        # Ensure the index directory exists
+        INDEX_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        # Connect to DB (create if needed, but schema creation is handled by Manager usually)
+        # We'll use a pragmatic approach: if table missing, create it here just in case
+        with sqlite3.connect(INDEX_DB_PATH) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT,
+                    description TEXT,
+                    status TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    points_collected INTEGER,
+                    error_message TEXT,
+                    stats JSON,
+                    bounds JSON,
+                    settings JSON
+                )
+            """)
+
+            conn.execute("""
+                INSERT OR REPLACE INTO projects (
+                    id, name, description, status, created_at, updated_at,
+                    points_collected, error_message, stats, bounds, settings
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                self.id,
+                self.name,
+                self.description,
+                self.status,
+                self.created_at,
+                self.updated_at,
+                self.points_collected,
+                self.error_message,
+                json.dumps(self.stats),
+                json.dumps(self.bounds.to_dict()),
+                json.dumps(self.settings.to_dict())
+            ))
+
     
     @classmethod
     def load(cls, project_id: str) -> Optional["Project"]:
@@ -382,7 +436,46 @@ class ProjectManager:
     
     def __init__(self):
         self.PROJECTS_DIR.mkdir(exist_ok=True)
-    
+        self._init_db()
+        self._sync_index_if_needed()
+
+    def _init_db(self):
+        """Initialize the SQLite index if it doesn't exist."""
+        INDEX_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(INDEX_DB_PATH) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT,
+                    description TEXT,
+                    status TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    points_collected INTEGER,
+                    error_message TEXT,
+                    stats JSON,
+                    bounds JSON,
+                    settings JSON
+                )
+            """)
+
+    def _sync_index_if_needed(self):
+        """Syncs the index from files if the index is empty but files exist."""
+        with sqlite3.connect(INDEX_DB_PATH) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+
+        if count == 0 and any(self.PROJECTS_DIR.iterdir()):
+            # Only sync if there are folders but no DB entries
+            log.info("Index empty but projects exist. Rebuilding index...")
+            for folder in self.PROJECTS_DIR.iterdir():
+                if folder.is_dir() and (folder / "project.json").exists():
+                    try:
+                        project = Project.load(folder.name)
+                        if project:
+                            project._update_index()
+                    except Exception as e:
+                        log.error(f"Failed to sync project {folder.name}: {e}")
+
     def create_project(
         self,
         name: str,
@@ -416,7 +509,49 @@ class ProjectManager:
         return project
     
     def list_projects(self) -> List[Project]:
-        """List all projects."""
+        """List all projects using the SQLite index."""
+        projects = []
+        try:
+            with sqlite3.connect(INDEX_DB_PATH) as conn:
+                # Get columns to map them correctly
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT
+                        id, name, description, status, created_at, updated_at,
+                        points_collected, error_message, stats, bounds, settings
+                    FROM projects
+                    ORDER BY created_at DESC
+                """)
+                rows = cursor.fetchall()
+
+                for row in rows:
+                    try:
+                        # Reconstruct Project object from DB row
+                        project = Project(
+                            id=row["id"],
+                            name=row["name"],
+                            description=row["description"] or "",
+                            status=row["status"],
+                            created_at=row["created_at"],
+                            updated_at=row["updated_at"],
+                            points_collected=row["points_collected"],
+                            error_message=row["error_message"],
+                            stats=json.loads(row["stats"]) if row["stats"] else {},
+                            bounds=BoundingBox.from_dict(json.loads(row["bounds"])),
+                            settings=ProjectSettings.from_dict(json.loads(row["settings"]))
+                        )
+                        projects.append(project)
+                    except Exception as e:
+                        log.error(f"Error loading project {row['id']} from index: {e}")
+        except sqlite3.OperationalError:
+            # Fallback if DB issues
+            log.warning("Index DB error. Falling back to file scan.")
+            return self._list_projects_from_files()
+
+        return projects
+
+    def _list_projects_from_files(self) -> List[Project]:
+        """Fallback: List all projects by reading files."""
         projects = []
         for folder in self.PROJECTS_DIR.iterdir():
             if folder.is_dir():
@@ -432,6 +567,15 @@ class ProjectManager:
     def delete_project(self, project_id: str) -> bool:
         """Delete a project and all its data."""
         project_dir = self.PROJECTS_DIR / project_id
+
+        # Remove from Index
+        try:
+            with sqlite3.connect(INDEX_DB_PATH) as conn:
+                conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        except Exception as e:
+            log.error(f"Failed to remove project {project_id} from index: {e}")
+
+        # Remove files
         if project_dir.exists():
             import shutil
             shutil.rmtree(project_dir)
