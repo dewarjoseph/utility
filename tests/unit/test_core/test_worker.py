@@ -31,6 +31,7 @@ def test_process_job_success(mock_worker):
     project.points_collected = 0
     project.data_dir = MagicMock()
     project.training_data_path = "test.jsonl"
+    project.stats = {}
     
     mock_worker.project_manager.get_project.return_value = project
     

@@ -1,22 +1,26 @@
 """
-Bylaws Generator - Automated cooperative bylaws generation.
+Bylaws Generator - Automated organization bylaws generation.
 
 Creates legally-compliant bylaws based on user choices about governance,
-profit distribution, and membership structure.
+profit distribution (if applicable), and membership structure.
+Supports Cooperatives, 501(c)(3) Charities, and 501(c)(4) Social Welfare Orgs.
 """
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from enum import Enum
 from datetime import datetime
+import json
 
 
 class EntityType(Enum):
-    """Type of cooperative entity."""
+    """Type of entity."""
     REIC = "Real Estate Investment Cooperative"
     LLC_COOP = "Cooperative LLC"
     LCA = "Limited Cooperative Association"
     NONPROFIT = "Nonprofit Cooperative"
+    SOCIAL_WELFARE_501C4 = "501(c)(4) Social Welfare Organization"
+    CHARITABLE_501C3 = "501(c)(3) Charitable Organization"
 
 
 class VotingStructure(Enum):
@@ -33,6 +37,7 @@ class SurplusDistribution(Enum):
     PATRONAGE = "patronage_dividends"
     CAPITAL_CONTRIBUTION = "capital_based"
     HYBRID = "hybrid"
+    NONPROFIT_REINVEST = "nonprofit_reinvestment"  # For 501c3/c4
 
 
 class BoardElection(Enum):
@@ -78,10 +83,14 @@ class BylawsConfig:
     surplus_distribution: SurplusDistribution = SurplusDistribution.PATRONAGE
     reserve_percentage: float = 0.20
     
-    # Anti-speculation
+    # Anti-speculation / Nonprofit specifics
     appreciation_cap: Optional[float] = 0.03  # 3% annual
     transfer_restrictions: bool = True
     right_of_first_refusal: bool = True
+
+    # Filing specifics
+    incorporator_name: str = "Authorized Incorporator"
+    incorporator_address: str = "123 Main St, Anytown, US"
 
 
 @dataclass
@@ -114,8 +123,126 @@ class GeneratedBylaws:
         return "\n".join(lines)
 
 
+@dataclass
+class FilingPacket:
+    """Generated filing documents and data."""
+    articles_of_incorporation: str  # Markdown content
+    filing_data: Dict[str, Any]     # JSON data for forms
+    instructions: str               # Step-by-step instructions
+
+
+class FilingGenerator:
+    """Generates state filing documents and data packets."""
+
+    def generate(self, config: BylawsConfig) -> FilingPacket:
+        if config.entity_type in [EntityType.CHARITABLE_501C3, EntityType.SOCIAL_WELFARE_501C4]:
+            return self._generate_nonprofit_filing(config)
+        else:
+            return self._generate_coop_filing(config)
+
+    def _generate_nonprofit_filing(self, config: BylawsConfig) -> FilingPacket:
+        """Generate filing packet for 501(c)(3) or (c)(4)."""
+
+        is_c3 = config.entity_type == EntityType.CHARITABLE_501C3
+
+        # IRS-required clauses
+        purpose_clause = (
+            "exclusively for charitable, religious, educational, and scientific purposes, "
+            "including, for such purposes, the making of distributions to organizations that "
+            "qualify as exempt organizations under section 501(c)(3) of the Internal Revenue Code."
+            if is_c3 else
+            "exclusively for the promotion of social welfare within the meaning of section 501(c)(4) "
+            "of the Internal Revenue Code."
+        )
+
+        dissolution_clause = (
+            "Upon the dissolution of the corporation, assets shall be distributed for one or more "
+            "exempt purposes within the meaning of section 501(c)(3) of the Internal Revenue Code, "
+            "or shall be distributed to the federal government, or to a state or local government, "
+            "for a public purpose."
+            if is_c3 else
+            "Upon the dissolution of the corporation, assets shall be distributed for one or more "
+            "exempt purposes within the meaning of section 501(c)(4) of the Internal Revenue Code, "
+            "or to a charitable organization."
+        )
+
+        # Markdown Articles
+        articles = f"""# ARTICLES OF INCORPORATION OF {config.cooperative_name.upper()}
+
+## ARTICLE I: NAME
+The name of the corporation is **{config.cooperative_name}**.
+
+## ARTICLE II: DURATION
+The duration of the corporation is perpetual.
+
+## ARTICLE III: PURPOSE
+The corporation is organized {purpose_clause}
+Specific Purpose: {config.purpose}
+
+## ARTICLE IV: MEMBERS
+The corporation shall have members as provided in the Bylaws.
+
+## ARTICLE V: REGISTERED AGENT
+[Address of Registered Agent to be provided]
+
+## ARTICLE VI: DIRECTORS
+The initial Board of Directors shall consist of {config.board_size} directors.
+
+## ARTICLE VII: DISSOLUTION
+{dissolution_clause}
+
+## ARTICLE VIII: INCORPORATOR
+{config.incorporator_name}
+{config.incorporator_address}
+
+Date: {datetime.now().strftime('%B %d, %Y')}
+"""
+
+        # JSON Data for Form Filling
+        filing_data = {
+            "entity_name": config.cooperative_name,
+            "entity_type": config.entity_type.value,
+            "state": config.state,
+            "purpose_short": config.purpose,
+            "purpose_irs_clause": purpose_clause,
+            "dissolution_clause": dissolution_clause,
+            "directors_count": config.board_size,
+            "incorporator": {
+                "name": config.incorporator_name,
+                "address": config.incorporator_address
+            },
+            "irs_form": "1023" if is_c3 else "1024-A",
+            "is_private_foundation": False,
+            "lobbying_election": "Yes (Form 5768)" if is_c3 else "Allowed (Primary purpose rule)",
+            "generated_at": datetime.now().isoformat()
+        }
+
+        instructions = f"""
+### Filing Instructions for {config.entity_type.value}
+
+1. **State Incorporation**:
+   - Copy the content from "Articles of Incorporation" into your state's generic Articles of Incorporation form or online portal.
+   - Pay the state filing fee.
+
+2. **IRS Exemption**:
+   - **For 501(c)(3)**: File Form 1023 (long form) or 1023-EZ (short form if receipts < $50k).
+   - **For 501(c)(4)**: File Form 1024-A (Notice of Operation) within 60 days of formation.
+   - Use the generated JSON data to help populate these forms.
+
+3. **EIN**:
+   - Apply for an EIN online at irs.gov immediately after state incorporation.
+"""
+
+        return FilingPacket(articles, filing_data, instructions)
+
+    def _generate_coop_filing(self, config: BylawsConfig) -> FilingPacket:
+        # Fallback for cooperatives (simplified)
+        articles = f"# ARTICLES OF INCORPORATION FOR {config.cooperative_name}\n\n(Standard Cooperative Articles would go here...)"
+        return FilingPacket(articles, {}, "File standard cooperative articles with your Secretary of State.")
+
+
 class BylawsGenerator:
-    """Generator for cooperative bylaws."""
+    """Generator for bylaws."""
     
     def __init__(self):
         self.templates: Dict[str, str] = self._load_templates()
@@ -123,15 +250,9 @@ class BylawsGenerator:
     def _load_templates(self) -> Dict[str, str]:
         """Load clause templates."""
         return {
-            'purpose': """
-### Section 1.1 - Purpose
-The purpose of this Cooperative is to {purpose}. The Cooperative shall operate 
-on a cooperative basis for the mutual benefit of its Members, who shall be the 
-primary users and beneficiaries of the Cooperative's services.
-""",
             'membership': """
 ### Section 2.1 - Eligibility
-Any natural person who supports the purposes of the Cooperative may apply for 
+Any natural person who supports the purposes of the organization may apply for
 membership. Membership is open without discrimination.
 
 ### Section 2.2 - Member Investment
@@ -140,8 +261,7 @@ membership. Membership is open without discrimination.
 ### Section 2.3 - Member Rights
 Each Member in good standing shall have the right to:
 - Vote in Member meetings
-- Receive patronage dividends as declared
-- Inspect Cooperative records
+- Inspect Organization records
 - Participate in Member education programs
 """,
             'voting': """
@@ -158,7 +278,7 @@ Members present and voting.
 """,
             'board': """
 ### Section 4.1 - Board of Directors
-The Cooperative shall be governed by a Board of Directors consisting of 
+The Organization shall be governed by a Board of Directors consisting of
 {board_size} directors, each serving a term of {term_years} years.
 
 ### Section 4.2 - Election
@@ -166,27 +286,7 @@ Directors shall be elected {election_method}.
 
 ### Section 4.3 - Powers and Duties
 The Board shall have full authority to manage the business and affairs of 
-the Cooperative, subject to these Bylaws and applicable law.
-""",
-            'surplus': """
-### Section 5.1 - Annual Surplus
-The net surplus of the Cooperative, after deducting operating expenses, 
-shall be allocated as follows:
-
-{surplus_allocation}
-
-### Section 5.2 - Patronage Dividends
-Patronage dividends shall be distributed to Members based on {patronage_basis}.
-""",
-            'anti_speculation': """
-### Section 6.1 - Transfer Restrictions
-{transfer_restrictions}
-
-### Section 6.2 - Appreciation Cap
-{appreciation_cap}
-
-### Section 6.3 - Right of First Refusal
-{first_refusal}
+the Organization, subject to these Bylaws and applicable law.
 """,
         }
     
@@ -194,6 +294,8 @@ Patronage dividends shall be distributed to Members based on {patronage_basis}.
         """Generate bylaws from configuration."""
         sections = {}
         
+        is_nonprofit = config.entity_type in [EntityType.CHARITABLE_501C3, EntityType.SOCIAL_WELFARE_501C4, EntityType.NONPROFIT]
+
         # Article I: Purpose
         sections["ARTICLE I - NAME AND PURPOSE"] = self._generate_purpose(config)
         
@@ -206,16 +308,33 @@ Patronage dividends shall be distributed to Members based on {patronage_basis}.
         # Article IV: Board
         sections["ARTICLE IV - BOARD OF DIRECTORS"] = self._generate_board(config)
         
-        # Article V: Surplus Distribution
-        sections["ARTICLE V - SURPLUS DISTRIBUTION"] = self._generate_surplus(config)
+        # Article V: Financial Provisions (Replaces Surplus for Nonprofits)
+        if is_nonprofit:
+            sections["ARTICLE V - FINANCIAL PROVISIONS"] = self._generate_nonprofit_financials(config)
+        else:
+            sections["ARTICLE V - SURPLUS DISTRIBUTION"] = self._generate_surplus(config)
         
-        # Article VI: Anti-Speculation (if applicable)
-        if config.appreciation_cap or config.transfer_restrictions:
+        # Article VI: Anti-Speculation / Community (for Coops)
+        if not is_nonprofit and (config.appreciation_cap or config.transfer_restrictions):
             sections["ARTICLE VI - COMMUNITY PRESERVATION"] = self._generate_anti_speculation(config)
+
+        # Article VII: Dissolution (Crucial for 501c)
+        if is_nonprofit:
+            sections["ARTICLE VII - DISSOLUTION"] = self._generate_dissolution(config)
         
         return GeneratedBylaws(config=config, sections=sections)
     
     def _generate_purpose(self, config: BylawsConfig) -> str:
+
+        # IRS specific language
+        irs_language = ""
+        if config.entity_type == EntityType.CHARITABLE_501C3:
+            irs_language = "This Corporation is organized exclusively for charitable, religious, educational, and scientific purposes under Section 501(c)(3) of the Internal Revenue Code."
+        elif config.entity_type == EntityType.SOCIAL_WELFARE_501C4:
+            irs_language = "This Corporation is organized exclusively for the promotion of social welfare under Section 501(c)(4) of the Internal Revenue Code."
+        else:
+            irs_language = "This Cooperative shall operate in accordance with internationally recognized cooperative principles."
+
         return f"""
 ### Section 1.1 - Name
 The name of this organization shall be **{config.cooperative_name}**.
@@ -223,10 +342,8 @@ The name of this organization shall be **{config.cooperative_name}**.
 ### Section 1.2 - Purpose
 {config.purpose}
 
-### Section 1.3 - Cooperative Principles
-This Cooperative shall operate in accordance with internationally recognized 
-cooperative principles, including democratic member control, member economic 
-participation, and concern for community.
+### Section 1.3 - Organization Type
+{irs_language}
 """
     
     def _generate_membership(self, config: BylawsConfig) -> str:
@@ -246,7 +363,7 @@ The maximum investment per member shall not exceed **${config.maximum_investment
         voting_map = {
             VotingStructure.ONE_MEMBER_ONE_VOTE: "Each Member shall have one (1) vote on all matters.",
             VotingStructure.PATRONAGE_BASED: "Voting power shall be allocated based on patronage.",
-            VotingStructure.QUADRATIC: "Voting shall utilize quadratic voting mechanics.",
+            VotingStructure.QUADRATIC: "Voting shall utilize quadratic voting mechanics (vote cost = votes²).",
             VotingStructure.HYBRID: "Voting power combines one-member-one-vote with quadratic voting.",
         }
         
@@ -284,11 +401,43 @@ The maximum investment per member shall not exceed **${config.maximum_investment
             SurplusDistribution.HYBRID: "a combination of participation and capital contribution",
         }
         
-        return self.templates['surplus'].format(
-            surplus_allocation=allocation,
-            patronage_basis=patronage_map.get(config.surplus_distribution, "patronage")
-        )
-    
+        return f"""
+### Section 5.1 - Annual Surplus
+The net surplus of the Cooperative, after deducting operating expenses,
+shall be allocated as follows:
+
+{allocation}
+
+### Section 5.2 - Patronage Dividends
+Patronage dividends shall be distributed to Members based on {patronage_map.get(config.surplus_distribution, "patronage")}.
+"""
+
+    def _generate_nonprofit_financials(self, config: BylawsConfig) -> str:
+        return """
+### Section 5.1 - No Private Inurement
+No part of the net earnings of the corporation shall inure to the benefit of, or be distributable to its members, trustees, officers, or other private persons, except that the corporation shall be authorized and empowered to pay reasonable compensation for services rendered.
+
+### Section 5.2 - Use of Funds
+All funds shall be used exclusively for the purposes stated in Article I.
+"""
+
+    def _generate_dissolution(self, config: BylawsConfig) -> str:
+        if config.entity_type == EntityType.CHARITABLE_501C3:
+            return """
+### Section 7.1 - Dissolution
+Upon the dissolution of the corporation, assets shall be distributed for one or more exempt purposes within the meaning of section 501(c)(3) of the Internal Revenue Code, or shall be distributed to the federal government, or to a state or local government, for a public purpose.
+"""
+        elif config.entity_type == EntityType.SOCIAL_WELFARE_501C4:
+            return """
+### Section 7.1 - Dissolution
+Upon the dissolution of the corporation, assets shall be distributed for one or more exempt purposes within the meaning of section 501(c)(4) of the Internal Revenue Code, or to a charitable organization.
+"""
+        else:
+            return """
+### Section 7.1 - Dissolution
+Upon dissolution, after paying all debts, remaining assets shall be distributed to another nonprofit cooperative or charitable organization.
+"""
+
     def _generate_anti_speculation(self, config: BylawsConfig) -> str:
         transfer = "Member shares may not be transferred without Board approval." if config.transfer_restrictions else "Member shares are freely transferable."
         
@@ -300,13 +449,22 @@ The maximum investment per member shall not exceed **${config.maximum_investment
         
         refusal = "The Cooperative shall have the right of first refusal on any proposed transfer of shares." if config.right_of_first_refusal else ""
         
-        return self.templates['anti_speculation'].format(
-            transfer_restrictions=transfer,
-            appreciation_cap=cap,
-            first_refusal=refusal
-        )
+        return f"""
+### Section 6.1 - Transfer Restrictions
+{transfer}
+
+### Section 6.2 - Appreciation Cap
+{cap}
+
+### Section 6.3 - Right of First Refusal
+{refusal}
+"""
 
 
 def get_bylaws_generator() -> BylawsGenerator:
     """Factory function for bylaws generator."""
     return BylawsGenerator()
+
+def get_filing_generator() -> FilingGenerator:
+    """Factory function for filing generator."""
+    return FilingGenerator()
