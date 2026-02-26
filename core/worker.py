@@ -168,6 +168,9 @@ class Worker:
                 f"Scanned {points_collected}/{max_points} points"
             )
             
+            # Buffer for batch saving
+            batch_points = []
+
             # Generate and evaluate points
             for _ in range(points_per_cycle):
                 if self._shutdown_requested:
@@ -185,13 +188,23 @@ class Worker:
                 total_score += score
                 max_score = max(max_score, score)
 
-                # Save the result
-                self._save_point(project, lat, lon, features, score)
+                # Collect point for batch saving
+                batch_points.append({
+                    "lat": lat,
+                    "lon": lon,
+                    "features": features,
+                    "score": score,
+                    "timestamp": datetime.now().isoformat()
+                })
                 points_collected += 1
                 
                 if points_collected >= max_points:
                     break
             
+            # Save batch to disk
+            if batch_points:
+                self._save_points_batch(project, batch_points)
+
             # Update project
             project.points_collected = points_collected
             project.stats['total_score'] = total_score
@@ -299,21 +312,41 @@ class Worker:
                     features: dict, score: float):
         """
         Save a scanned point to the project's training dataset.
+        Deprecated: Use _save_points_batch for better performance.
         """
-        data = {
-            "location": {"lat": lat, "lon": lon},
-            "features_raw": features,
-            "expert_label": {
-                "gross_utility_score": score,
-                "reasoning_trace": [],
-            },
-            "timestamp": datetime.now().isoformat(),
-        }
+        self._save_points_batch(project, [{
+            "lat": lat,
+            "lon": lon,
+            "features": features,
+            "score": score
+        }])
+
+    def _save_points_batch(self, project: Project, points: list):
+        """
+        Save a batch of scanned points to the project's training dataset.
         
-        # Append to JSONL file
+        Args:
+            project: Project object
+            points: List of dicts with keys: lat, lon, features, score
+        """
+        if not points:
+            return
+
         project.data_dir.mkdir(parents=True, exist_ok=True)
+
+        # Open file once for all points
         with open(project.training_data_path, "a") as f:
-            f.write(json.dumps(data) + "\n")
+            for p in points:
+                data = {
+                    "location": {"lat": p["lat"], "lon": p["lon"]},
+                    "features_raw": p["features"],
+                    "expert_label": {
+                        "gross_utility_score": p["score"],
+                        "reasoning_trace": [],
+                    },
+                    "timestamp": p.get("timestamp", datetime.now().isoformat()),
+                }
+                f.write(json.dumps(data) + "\n")
     
     def stop(self):
         """Stop the worker gracefully."""
