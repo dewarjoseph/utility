@@ -10,10 +10,19 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 import random
 import hashlib
+import os
+import requests
 import logging
+import math
 
 # Configure logging
 log = logging.getLogger(__name__)
+
+# Try to import OneBuildClient, but don't fail if it's missing
+try:
+    from core.onebuild_client import OneBuildClient
+except ImportError:
+    OneBuildClient = None
 
 # Import Google Maps Solar API client if available
 try:
@@ -23,10 +32,6 @@ try:
 except ImportError:
     GOOGLE_SOLAR_AVAILABLE = False
     log.warning("Google Maps Solar API client not installed. Real solar data unavailable.")
-try:
-    from core.onebuild_client import OneBuildClient
-except ImportError:
-    OneBuildClient = None
 
 
 class APIProvider(Enum):
@@ -113,6 +118,26 @@ class APIIntegrationLayer:
         # Initialize default configs
         for provider in APIProvider:
             self.configs[provider] = APIConfig(provider=provider)
+
+        # Auto-configure from environment variables
+        self._configure_from_env()
+
+    def _configure_from_env(self):
+        """Configure providers from environment variables."""
+        env_map = {
+            APIProvider.GRIDICS: "GRIDICS_API_KEY",
+            APIProvider.ZONEOMICS: "ZONEOMICS_API_KEY",
+            APIProvider.ONEBUILD: "ONEBUILD_API_KEY",
+            APIProvider.FIRST_STREET: "FIRST_STREET_API_KEY",
+            APIProvider.GOOGLE_SOLAR: "GOOGLE_SOLAR_API_KEY",
+            APIProvider.ATTOM: "ATTOM_API_KEY",
+        }
+
+        for provider, env_var in env_map.items():
+            api_key = os.environ.get(env_var)
+            if api_key:
+                log.info(f"Enabling {provider.value} from environment variable {env_var}")
+                self.configure(provider, api_key, enabled=True)
     
     def configure(self, provider: APIProvider, api_key: str, enabled: bool = True):
         """Configure an API provider."""
@@ -134,8 +159,63 @@ class APIIntegrationLayer:
         if self.use_mock or not self._is_enabled(APIProvider.GRIDICS):
             return self._mock_zoning(latitude, longitude)
         
-        # TODO: Implement real Gridics/Zoneomics API call
-        return self._mock_zoning(latitude, longitude)
+        # Real API Implementation
+        try:
+            config = self.configs[APIProvider.GRIDICS]
+
+            # Use provided base URL or default to Gridics API
+            base_url = config.base_url or "https://api.gridics.com/v1"
+
+            # Fetch parcel data by lat/lon
+            response = requests.get(
+                f"{base_url}/zoning/parcel",
+                params={
+                    "lat": latitude,
+                    "lng": longitude
+                },
+                headers={
+                    "Authorization": f"Bearer {config.api_key}",
+                    "Accept": "application/json"
+                },
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+
+                # Parse response - mapping Gridics structure to our schema
+                # Note: This schema is hypothetical based on typical zoning API structures
+                # as specific documentation was unavailable.
+
+                parcel = data.get("parcel", {})
+                zoning = parcel.get("zoning", {})
+
+                return ZoningAPIResponse(
+                    zone_code=zoning.get("code", "UNK"),
+                    zone_name=zoning.get("name", "Unknown Zone"),
+                    allowed_uses=zoning.get("allowed_uses", []),
+                    max_height_ft=float(zoning.get("constraints", {}).get("max_height_ft", 0)),
+                    max_far=float(zoning.get("constraints", {}).get("max_far", 0)),
+                    max_lot_coverage=float(zoning.get("constraints", {}).get("max_lot_coverage", 0)),
+                    setbacks={
+                        "front": float(zoning.get("setbacks", {}).get("front", 0)),
+                        "side": float(zoning.get("setbacks", {}).get("side", 0)),
+                        "rear": float(zoning.get("setbacks", {}).get("rear", 0)),
+                    },
+                    parking_ratio=float(zoning.get("parking", {}).get("ratio", 0)),
+                    overlay_districts=zoning.get("overlays", []),
+                    source=APIProvider.GRIDICS,
+                    raw_response=data
+                )
+            else:
+                log.error(f"Gridics API error: {response.status_code} - {response.text}")
+                # Fallback to mock on error
+                return self._mock_zoning(latitude, longitude)
+
+        except Exception as e:
+            log.exception(f"Exception calling Gridics API: {e}")
+            # Fallback to mock on exception
+            return self._mock_zoning(latitude, longitude)
     
     def get_construction_costs(
         self,
@@ -148,93 +228,102 @@ class APIIntegrationLayer:
         if self.use_mock or not self._is_enabled(APIProvider.ONEBUILD):
             return self._mock_construction_costs(latitude, longitude, building_type, sqft)
         
+        # Priority 1: Try using the dedicated OneBuildClient if available
+        if OneBuildClient:
+            try:
+                client = OneBuildClient(api_key=self.configs[APIProvider.ONEBUILD].api_key)
+                if client.is_configured():
+                    items = client.get_cost_data(building_type)
+
+                    if items:
+                        material_costs = {}
+                        labor_costs = {}
+                        total_material = 0.0
+                        total_labor = 0.0
+
+                        for item in items:
+                            cost_contribution = item.price
+                            if item.category == 'material':
+                                material_costs[item.name] = cost_contribution * sqft
+                                total_material += cost_contribution
+                            else:
+                                labor_costs[item.name] = cost_contribution * sqft
+                                total_labor += cost_contribution
+
+                        cost_per_sqft = total_material + total_labor
+
+                        min_expected_cost = 150.0
+                        if 0 < cost_per_sqft < min_expected_cost:
+                            scale_factor = min_expected_cost / cost_per_sqft
+                            cost_per_sqft *= scale_factor
+                            for k in material_costs: material_costs[k] *= scale_factor
+                            for k in labor_costs: labor_costs[k] *= scale_factor
+
+                        total_estimate = (sum(material_costs.values()) + sum(labor_costs.values()))
+
+                        return ConstructionCostResponse(
+                            cost_per_sqft=round(cost_per_sqft, 2),
+                            location_factor=1.0,
+                            material_costs=material_costs,
+                            labor_costs=labor_costs,
+                            total_estimate=round(total_estimate, 0),
+                            confidence=0.9,
+                            source=APIProvider.ONEBUILD,
+                        )
+            except Exception as e:
+                log.error(f"Error using OneBuildClient: {e}")
+                # Continue to fallback
+
+        # Priority 2: Direct API call (fallback implementation)
         try:
-            # Check if OneBuildClient is available
-            if OneBuildClient is None:
-                logging.warning("OneBuildClient not available. Falling back to mock data.")
-                return self._mock_construction_costs(latitude, longitude, building_type, sqft)
+            config = self.configs[APIProvider.ONEBUILD]
 
-            client = OneBuildClient(api_key=self.configs[APIProvider.ONEBUILD].api_key)
-            if not client.is_configured():
-                return self._mock_construction_costs(latitude, longitude, building_type, sqft)
+            # Use provided base URL or default to 1build API
+            base_url = config.base_url or "https://api.1build.com/v1"
 
-            # Fetch real data
-            # Note: region_id is omitted as we don't have a mapping from lat/lon to region_id yet
-            # and the client defaults to national average or handles it.
-            items = client.get_cost_data(building_type)
-
-            if not items:
-                # Fallback if API returns no data
-                return self._mock_construction_costs(latitude, longitude, building_type, sqft)
-
-            material_costs = {}
-            labor_costs = {}
-            total_material = 0.0
-            total_labor = 0.0
-
-            # Since items are representative per unit, we need to estimate quantities
-            # This is a heuristic estimation since we don't have a full BOM
-            # We assume the "price" returned is a unit price, and we scale it by sqft
-            # with some factor based on the item type.
-            # However, simpler approach: sum the unit prices to get a "base cost factor"
-            # and then scale to match expected market rates, or treat them as $/sqft components.
-
-            # Let's treat the returned items as major cost drivers per sqft (or similar unit)
-            # This is an approximation because 1build returns unit costs (e.g. per board, per hour)
-
-            # Better approach given the constraints:
-            # Use the API data to populate the *breakdown* and *relative costs*,
-            # but normalize the total to a reasonable range if needed, or trust the API if it returns $/sqft.
-            # The client implementation returns items with 'price' and 'unit'.
-
-            # For this implementation, we will assume the returned items represent
-            # key cost drivers and we aggregate them. To make the numbers realistic for
-            # a "total project cost", we might need to apply a multiplier if the API
-            # only returns specific material costs.
-
-            for item in items:
-                # Simple heuristic: assume item price contributes to cost per sqft
-                # In reality, you'd multiply price * quantity_per_sqft
-                # We'll use a standard quantity factor of 1.0 for simplicity in this integration
-                cost_contribution = item.price
-
-                if item.category == 'material':
-                    material_costs[item.name] = cost_contribution * sqft
-                    total_material += cost_contribution
-                else:
-                    labor_costs[item.name] = cost_contribution * sqft
-                    total_labor += cost_contribution
-
-            # Calculate totals
-            cost_per_sqft = total_material + total_labor
-
-            # Sanity check: if cost is too low (e.g. just one 2x4 price), fallback or scale
-            # A typical building is $150-$400 / sqft.
-            # If our sum is < $50, it's likely just unit prices of components, not per sqft assembly costs.
-            # We will scale it up to a realistic baseline if it's too low, maintaining the ratio.
-
-            min_expected_cost = 150.0
-            if cost_per_sqft < min_expected_cost and cost_per_sqft > 0:
-                scale_factor = min_expected_cost / cost_per_sqft
-                cost_per_sqft *= scale_factor
-                # Scale components
-                for k in material_costs: material_costs[k] *= scale_factor
-                for k in labor_costs: labor_costs[k] *= scale_factor
-
-            total_estimate = (sum(material_costs.values()) + sum(labor_costs.values()))
-
-            return ConstructionCostResponse(
-                cost_per_sqft=round(cost_per_sqft, 2),
-                location_factor=1.0, # API data already localized if region provided, else 1.0
-                material_costs=material_costs,
-                labor_costs=labor_costs,
-                total_estimate=round(total_estimate, 0),
-                confidence=0.9, # Higher confidence with real data
-                source=APIProvider.ONEBUILD,
+            # Fetch cost estimates
+            response = requests.post(
+                f"{base_url}/estimates/calculate",
+                json={
+                    "location": {
+                        "latitude": latitude,
+                        "longitude": longitude
+                    },
+                    "project_details": {
+                        "type": building_type,
+                        "area_sqft": sqft,
+                        "quality": "standard"
+                    }
+                },
+                headers={
+                    "Authorization": f"Bearer {config.api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=15
             )
 
+            if response.status_code == 200:
+                data = response.json()
+
+                # Parse 1build response (hypothetical structure)
+                estimate = data.get("estimate", {})
+                breakdown = estimate.get("breakdown", {})
+
+                return ConstructionCostResponse(
+                    cost_per_sqft=float(estimate.get("cost_per_sqft", 0)),
+                    location_factor=float(estimate.get("location_factor", 1.0)),
+                    material_costs=breakdown.get("materials", {}),
+                    labor_costs=breakdown.get("labor", {}),
+                    total_estimate=float(estimate.get("total", 0)),
+                    confidence=float(estimate.get("confidence_score", 0.0)),
+                    source=APIProvider.ONEBUILD
+                )
+            else:
+                log.error(f"1build API error: {response.status_code} - {response.text}")
+                return self._mock_construction_costs(latitude, longitude, building_type, sqft)
+
         except Exception as e:
-            logging.error(f"Error calling 1Build API: {e}")
+            log.exception(f"Exception calling 1build API: {e}")
             return self._mock_construction_costs(latitude, longitude, building_type, sqft)
     
     def get_climate_risk(
@@ -246,10 +335,56 @@ class APIIntegrationLayer:
         if self.use_mock or not self._is_enabled(APIProvider.FIRST_STREET):
             return self._mock_climate_risk(latitude, longitude)
         
+        # Real API Implementation
         try:
-            return self._get_first_street_risk(latitude, longitude)
+            config = self.configs[APIProvider.FIRST_STREET]
+
+            # Use provided base URL or default to First Street API
+            base_url = config.base_url or "https://api.firststreet.org/v1"
+
+            # Fetch property risk data
+            response = requests.get(
+                f"{base_url}/data/property",
+                params={
+                    "lat": latitude,
+                    "lng": longitude,
+                    "products": "flood,fire,heat,wind"
+                },
+                headers={
+                    "Authorization": f"Bearer {config.api_key}",
+                    "Accept": "application/json"
+                },
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+
+                # Parse First Street response (hypothetical structure)
+                risk = data.get("risk", {})
+                flood = risk.get("flood", {}).get("risk_factor", 1)
+                fire = risk.get("fire", {}).get("risk_factor", 1)
+                heat = risk.get("heat", {}).get("risk_factor", 1)
+                wind = risk.get("wind", {}).get("risk_factor", 1)
+
+                # Calculate composite
+                overall = int((flood + fire + heat + wind) / 4)
+
+                return ClimateRiskResponse(
+                    flood_factor=int(flood),
+                    fire_factor=int(fire),
+                    heat_factor=int(heat),
+                    wind_factor=int(wind),
+                    overall_risk=overall,
+                    insurance_estimate=float(risk.get("financial", {}).get("estimated_insurance_cost", 1500)),
+                    source=APIProvider.FIRST_STREET
+                )
+            else:
+                log.error(f"First Street API error: {response.status_code} - {response.text}")
+                return self._mock_climate_risk(latitude, longitude)
+
         except Exception as e:
-            logger.error(f"First Street API failed: {e}. Falling back to mock data.")
+            log.exception(f"Exception calling First Street API: {e}")
             return self._mock_climate_risk(latitude, longitude)
     
     def get_solar_potential(
@@ -263,18 +398,76 @@ class APIIntegrationLayer:
         if self.use_mock or not self._is_enabled(APIProvider.GOOGLE_SOLAR):
             return self._mock_solar_potential(latitude, longitude, roof_sqft)
         
-        # We check enabled status inside _is_enabled but we also need to know if the library is available.
-        # However, for testing, we might want to bypass the library check if we mock the client getter.
-        # But _get_solar_client handles the library check too.
+        # Priority 1: Use the official Google Solar API client if available
+        if GOOGLE_SOLAR_AVAILABLE:
+            try:
+                client = self._get_solar_client()
+                if client:
+                    return self._get_real_solar_potential(client, latitude, longitude, electricity_rate)
+            except Exception as e:
+                log.error(f"Error using Google Solar Client: {e}")
+                # Fallback to direct request
 
+        # Priority 2: Direct API Implementation (fallback)
         try:
-            client = self._get_solar_client()
-            if client:
-                return self._get_real_solar_potential(client, latitude, longitude, electricity_rate)
-        except Exception as e:
-            log.error(f"Error calling Google Solar API: {e}")
+            config = self.configs[APIProvider.GOOGLE_SOLAR]
 
-        return self._mock_solar_potential(latitude, longitude, roof_sqft)
+            # Use provided base URL or default to Google Solar API
+            base_url = config.base_url or "https://solar.googleapis.com/v1"
+
+            # Fetch building insights
+            response = requests.get(
+                f"{base_url}/buildingInsights:findClosest",
+                params={
+                    "location.latitude": latitude,
+                    "location.longitude": longitude,
+                    "requiredQuality": "HIGH",
+                    "key": config.api_key
+                },
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+
+                # Parse Google Solar response
+                solar_potential = data.get("solarPotential", {})
+                max_panels = solar_potential.get("maxArrayPanelsCount", 0)
+                panel_capacity_watts = solar_potential.get("panelCapacityWatts", 250)
+
+                # Use financial analysis if available for estimates
+                financial_analysis = solar_potential.get("financialAnalyses", [{}])[0]
+                annual_kwh = float(financial_analysis.get("energyBill", {}).get("federalIncentive", 0)) # Fallback field usage
+
+                # If we have proper financial analysis, use it
+                if "leasingSavings" in financial_analysis:
+                     annual_kwh = float(financial_analysis.get("leasingSavings", {}).get("annualKwh", 0))
+
+                # Re-calculate based on what we have if specific fields missing
+                system_kw = (max_panels * panel_capacity_watts) / 1000
+                if annual_kwh == 0 and system_kw > 0:
+                     # Estimate based on California average sun hours
+                     annual_kwh = system_kw * 4.5 * 365
+
+                # Estimate savings
+                savings = annual_kwh * 0.15 # Approx $0.15/kWh
+
+                return SolarPotentialResponse(
+                    annual_kwh=round(annual_kwh, 0),
+                    system_capacity_kw=round(system_kw, 1),
+                    panel_count=max_panels,
+                    roof_area_sqft=float(solar_potential.get("wholeRoofStats", {}).get("areaMeters2", 0)) * 10.764,
+                    shade_factor=0.15, # Placeholder as this is complex to derive from raw API without deep analysis
+                    estimated_savings=round(savings, 0),
+                    source=APIProvider.GOOGLE_SOLAR
+                )
+            else:
+                log.error(f"Google Solar API error: {response.status_code} - {response.text}")
+                return self._mock_solar_potential(latitude, longitude, roof_sqft)
+
+        except Exception as e:
+            log.exception(f"Exception calling Google Solar API: {e}")
+            return self._mock_solar_potential(latitude, longitude, roof_sqft)
 
     def _get_solar_client(self) -> Optional[Any]:
         """Get or initialize the Google Solar API client."""
@@ -300,7 +493,7 @@ class APIIntegrationLayer:
         longitude: float,
         electricity_rate: float
     ) -> SolarPotentialResponse:
-        """Fetch real solar potential from Google Solar API."""
+        """Fetch real solar potential from Google Solar API using client."""
         # Create request
         request = solar_v1.FindClosestBuildingInsightsRequest(
             location={

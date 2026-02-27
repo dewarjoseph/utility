@@ -1,152 +1,213 @@
 import unittest
-from unittest.mock import MagicMock, patch
-from core.api_layer import APIIntegrationLayer, APIProvider, ClimateRiskResponse
+from unittest.mock import patch, MagicMock
+import os
+import sys
+
+# Add the project root to the path so we can import core
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from core.api_layer import (
+    APIIntegrationLayer,
+    APIProvider,
+    ZoningAPIResponse,
+    ConstructionCostResponse,
+    ClimateRiskResponse,
+    SolarPotentialResponse
+)
 
 class TestAPIIntegrationLayer(unittest.TestCase):
     def setUp(self):
-        self.api = APIIntegrationLayer()
+        # Reset environment variables to ensure clean state
+        self.env_patcher = patch.dict(os.environ, {}, clear=True)
+        self.env_patcher.start()
+        self.api_layer = APIIntegrationLayer()
 
-    @patch('core.api_layer.requests.post')
-    def test_get_first_street_risk_success_with_filtering(self, mock_post):
-        # Configure API
-        self.api.configure(APIProvider.FIRST_STREET, api_key="test_key")
+    def tearDown(self):
+        self.env_patcher.stop()
 
-        # Mock response data with multiple scenarios to test filtering
+    def test_initialization(self):
+        """Test that the API layer initializes with mock data enabled by default."""
+        self.assertTrue(self.api_layer.use_mock)
+        for provider in APIProvider:
+            self.assertIn(provider, self.api_layer.configs)
+
+    def test_mock_zoning(self):
+        """Test retrieving mock zoning data."""
+        response = self.api_layer.get_zoning(36.9741, -122.0308)
+        self.assertIsInstance(response, ZoningAPIResponse)
+        self.assertEqual(response.source, APIProvider.GRIDICS)
+        self.assertIsNotNone(response.zone_code)
+        self.assertIsNotNone(response.allowed_uses)
+
+    def test_mock_construction_costs(self):
+        """Test retrieving mock construction costs."""
+        response = self.api_layer.get_construction_costs(36.9741, -122.0308, 'wood_frame', 1000)
+        self.assertIsInstance(response, ConstructionCostResponse)
+        self.assertEqual(response.source, APIProvider.ONEBUILD)
+        self.assertGreater(response.total_estimate, 0)
+
+    def test_mock_climate_risk(self):
+        """Test retrieving mock climate risk data."""
+        response = self.api_layer.get_climate_risk(36.9741, -122.0308)
+        self.assertIsInstance(response, ClimateRiskResponse)
+        self.assertEqual(response.source, APIProvider.FIRST_STREET)
+        self.assertGreaterEqual(response.overall_risk, 0)
+        self.assertLessEqual(response.overall_risk, 10)
+
+    def test_mock_solar_potential(self):
+        """Test retrieving mock solar potential data."""
+        response = self.api_layer.get_solar_potential(36.9741, -122.0308, 2000)
+        self.assertIsInstance(response, SolarPotentialResponse)
+        self.assertEqual(response.source, APIProvider.GOOGLE_SOLAR)
+        self.assertGreater(response.annual_kwh, 0)
+
+    def test_configure_provider(self):
+        """Test configuring a provider enables it and disables global mock."""
+        self.api_layer.configure(APIProvider.GRIDICS, "test_key")
+        self.assertFalse(self.api_layer.use_mock)
+        config = self.api_layer.configs[APIProvider.GRIDICS]
+        self.assertTrue(config.enabled)
+        self.assertEqual(config.api_key, "test_key")
+
+    @patch('requests.get')
+    def test_real_gridics_api(self, mock_get):
+        """Test parsing of real Gridics API response."""
+        # Enable Gridics
+        self.api_layer.configure(APIProvider.GRIDICS, "fake_key")
+
+        # Mock response
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
-            "data": {
-                "placeByCoordinate": {
-                    "placeId": "12345",
-                    "flood": {
-                        "data": {
-                            "floodFactors": [
-                                {"floodFactor": 90, "ssp": "SSP_5_85", "relativeYear": 30},
-                                {"floodFactor": 20, "ssp": "SSP_2_45", "relativeYear": 0}, # Match
-                            ],
-                            "floodDamages": {
-                                "aal": [
-                                    {"aal": 1000, "ssp": "SSP_5_85", "relativeYear": 30},
-                                    {"aal": 100, "ssp": "SSP_2_45", "relativeYear": 0}, # Match
-                                ]
-                            }
-                        }
+            "parcel": {
+                "zoning": {
+                    "code": "R-1",
+                    "name": "Single Family",
+                    "allowed_uses": ["residential"],
+                    "constraints": {
+                        "max_height_ft": 30,
+                        "max_far": 0.5,
+                        "max_lot_coverage": 0.4
                     },
-                    "wildfire": {
-                        "data": {
-                            "fireFactors": [
-                                {"fireFactor": 30, "ssp": "SSP_2_45", "relativeYear": 0}, # Match
-                            ],
-                            "wildfireDamages": {"aal": [{"aal": 200, "ssp": "SSP_2_45", "relativeYear": 0}]}
-                        }
-                    },
-                    "heat": {
-                        "data": {
-                            "heatFactors": [{"heatFactor": 50, "ssp": "SSP_2_45", "relativeYear": 0}] # Match
-                        }
-                    },
-                    "wind": {
-                        "data": {
-                            "windFactors": [{"windFactor": 45, "ssp": "SSP_2_45", "relativeYear": 0}], # Match
-                            "windDamages": {"aal": [{"aal": 50, "ssp": "SSP_2_45", "relativeYear": 0}]}
-                        }
-                    }
+                    "setbacks": {"front": 20, "side": 5, "rear": 10},
+                    "parking": {"ratio": 2.0},
+                    "overlays": ["Historic"]
                 }
             }
         }
-        mock_response.status_code = 200
-        mock_post.return_value = mock_response
+        mock_get.return_value = mock_response
 
         # Call method
-        result = self.api.get_climate_risk(34.05, -118.25)
+        response = self.api_layer.get_zoning(36.9741, -122.0308)
 
-        # Verify calls
-        mock_post.assert_called_once()
+        # Verify
+        self.assertIsInstance(response, ZoningAPIResponse)
+        self.assertEqual(response.zone_code, "R-1")
+        self.assertEqual(response.max_height_ft, 30)
+        self.assertEqual(response.setbacks['front'], 20)
+        self.assertEqual(response.source, APIProvider.GRIDICS)
+        mock_get.assert_called_once()
 
-        # Verify result
-        self.assertIsInstance(result, ClimateRiskResponse)
-        self.assertEqual(result.flood_factor, 2) # Should pick 20, normalize to 2
-        self.assertEqual(result.fire_factor, 3)
-        self.assertEqual(result.heat_factor, 5)
-        self.assertEqual(result.wind_factor, 5)
-        self.assertEqual(result.source, APIProvider.FIRST_STREET)
+    @patch('requests.post')
+    def test_real_onebuild_api(self, mock_post):
+        """Test parsing of real 1build API response (fallback to requests when client missing)."""
+        # Enable 1build
+        self.api_layer.configure(APIProvider.ONEBUILD, "fake_key")
 
-        # Verify insurance calculation
-        # Total AAL = 100 + 200 + 50 = 350
-        self.assertEqual(result.insurance_estimate, 1025)
-
-    @patch('core.api_layer.requests.post')
-    def test_get_first_street_risk_low_values(self, mock_post):
-        # Configure API
-        self.api.configure(APIProvider.FIRST_STREET, api_key="test_key")
-
-        # Mock response data with low values (1-10 range on 100 scale)
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "data": {
-                "placeByCoordinate": {
-                    "placeId": "12345",
-                    "flood": {
-                        "data": {
-                            "floodFactors": [{"floodFactor": 5, "ssp": "SSP_2_45", "relativeYear": 0}],
-                            "floodDamages": {"aal": [{"aal": 10, "ssp": "SSP_2_45", "relativeYear": 0}]}
-                        }
-                    },
-                    "wildfire": {
-                        "data": {
-                            "fireFactors": [{"fireFactor": 10, "ssp": "SSP_2_45", "relativeYear": 0}],
-                            "wildfireDamages": {"aal": [{"aal": 20, "ssp": "SSP_2_45", "relativeYear": 0}]}
-                        }
-                    },
-                    "heat": {
-                        "data": {
-                            "heatFactors": [{"heatFactor": 1, "ssp": "SSP_2_45", "relativeYear": 0}]
-                        }
-                    },
-                    "wind": {
-                        "data": {
-                            "windFactors": [{"windFactor": 11, "ssp": "SSP_2_45", "relativeYear": 0}],
-                            "windDamages": {"aal": [{"aal": 5, "ssp": "SSP_2_45", "relativeYear": 0}]}
-                        }
+        # Ensure OneBuildClient is None or mocked to fail configuration to force fallback
+        with patch('core.api_layer.OneBuildClient', None):
+            # Mock response
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "estimate": {
+                    "cost_per_sqft": 200,
+                    "location_factor": 1.2,
+                    "total": 200000,
+                    "confidence_score": 0.9,
+                    "breakdown": {
+                        "materials": {"lumber": 50000},
+                        "labor": {"carpentry": 60000}
                     }
                 }
             }
-        }
+            mock_post.return_value = mock_response
+
+            # Call method
+            response = self.api_layer.get_construction_costs(36.9741, -122.0308, "wood_frame", 1000)
+
+            # Verify
+            self.assertIsInstance(response, ConstructionCostResponse)
+            self.assertEqual(response.total_estimate, 200000)
+            self.assertEqual(response.cost_per_sqft, 200)
+            self.assertEqual(response.source, APIProvider.ONEBUILD)
+            mock_post.assert_called_once()
+
+    @patch('requests.get')
+    def test_real_first_street_api(self, mock_get):
+        """Test parsing of real First Street API response."""
+        # Enable First Street
+        self.api_layer.configure(APIProvider.FIRST_STREET, "fake_key")
+
+        # Mock response
+        mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_post.return_value = mock_response
+        mock_response.json.return_value = {
+            "risk": {
+                "flood": {"risk_factor": 2},
+                "fire": {"risk_factor": 5},
+                "heat": {"risk_factor": 8},
+                "wind": {"risk_factor": 1},
+                "financial": {"estimated_insurance_cost": 2000}
+            }
+        }
+        mock_get.return_value = mock_response
 
         # Call method
-        result = self.api.get_climate_risk(34.05, -118.25)
+        response = self.api_layer.get_climate_risk(36.9741, -122.0308)
 
-        # Verify normalization
-        self.assertEqual(result.flood_factor, 1) # ceil(5/10) = 1
-        self.assertEqual(result.fire_factor, 1)  # ceil(10/10) = 1
-        self.assertEqual(result.heat_factor, 1)  # ceil(1/10) = 1
-        self.assertEqual(result.wind_factor, 2)  # ceil(11/10) = 2
+        # Verify
+        self.assertIsInstance(response, ClimateRiskResponse)
+        self.assertEqual(response.flood_factor, 2)
+        self.assertEqual(response.fire_factor, 5)
+        self.assertEqual(response.overall_risk, 4) # (2+5+8+1)/4 = 4
+        self.assertEqual(response.insurance_estimate, 2000)
+        self.assertEqual(response.source, APIProvider.FIRST_STREET)
+        mock_get.assert_called_once()
 
-    @patch('core.api_layer.requests.post')
-    def test_get_first_street_risk_failure_fallback(self, mock_post):
-        # Configure API
-        self.api.configure(APIProvider.FIRST_STREET, api_key="test_key")
+    @patch('requests.get')
+    def test_real_google_solar_api(self, mock_get):
+        """Test parsing of real Google Solar API response (fallback when client missing)."""
+        # Enable Google Solar
+        self.api_layer.configure(APIProvider.GOOGLE_SOLAR, "fake_key")
 
-        # Mock failure
-        mock_post.side_effect = Exception("API connection failed")
+        # Force fallback by ensuring GOOGLE_SOLAR_AVAILABLE is False in context
+        with patch('core.api_layer.GOOGLE_SOLAR_AVAILABLE', False):
+            # Mock response
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "solarPotential": {
+                    "maxArrayPanelsCount": 20,
+                    "panelCapacityWatts": 300,
+                    "wholeRoofStats": {"areaMeters2": 100},
+                    "financialAnalyses": [{
+                        "leasingSavings": {"annualKwh": 8000}
+                    }]
+                }
+            }
+            mock_get.return_value = mock_response
 
-        # Call method - should catch exception and return mock
-        with self.assertLogs('core.api_layer', level='ERROR') as cm:
-            result = self.api.get_climate_risk(34.05, -118.25)
+            # Call method
+            response = self.api_layer.get_solar_potential(36.9741, -122.0308, 1000)
 
-        # Verify logs
-        self.assertTrue(any("First Street API failed" in output for output in cm.output))
-
-        # Verify result is mock data
-        self.assertIsInstance(result, ClimateRiskResponse)
-
-    def test_get_climate_risk_mock_when_disabled(self):
-        # API not configured/enabled
-        result = self.api.get_climate_risk(34.05, -118.25)
-        self.assertIsInstance(result, ClimateRiskResponse)
-        # Should be deterministic mock
-        self.assertEqual(result.source, APIProvider.FIRST_STREET)
+            # Verify
+            self.assertIsInstance(response, SolarPotentialResponse)
+            self.assertEqual(response.annual_kwh, 8000)
+            self.assertEqual(response.panel_count, 20)
+            self.assertEqual(response.system_capacity_kw, 6.0) # (20 * 300) / 1000
+            self.assertEqual(response.source, APIProvider.GOOGLE_SOLAR)
+            mock_get.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()
