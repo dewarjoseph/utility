@@ -521,11 +521,17 @@ class APIIntegrationLayer:
         # sunshine hours
         sun_hours = potential.max_sunshine_hours_per_year
 
-        # Capacity (kW)
+        # Capacity (kW) - assume standard 400W panel if not specified,
+        # or use panel_capacity_watts from config/response if available.
+        # The API `panel_capacity_watts` describes the panel capacity used in calculations.
         panel_capacity_watts = potential.panel_capacity_watts
         system_capacity_kw = (panel_count * panel_capacity_watts) / 1000.0
 
         # Annual kWh calculation
+        # Carbon offset factor is kg/MWh, so not directly energy.
+        # We can estimate annual kWh = System kW * Sun Hours * Efficiency Factor (roughly 0.75-0.85)
+        # However, `whole_roof_stats` might have better data or we can integrate `carbon_offset_factor` if needed.
+        # A simpler approximation often used with this API:
         annual_kwh = system_capacity_kw * sun_hours * 0.8 # 0.8 system efficiency derate
 
         # Savings
@@ -536,7 +542,7 @@ class APIIntegrationLayer:
             system_capacity_kw=round(system_capacity_kw, 1),
             panel_count=panel_count,
             roof_area_sqft=round(roof_area_sqft, 0),
-            shade_factor=0.15,
+            shade_factor=0.15, # Placeholder or derive from sunshine_quantiles
             estimated_savings=round(estimated_savings, 0),
             source=APIProvider.GOOGLE_SOLAR,
         )
@@ -557,6 +563,165 @@ class APIIntegrationLayer:
         seed_int = int(hash_obj.hexdigest()[:16], 16)
         return seed_int
     
+    def _get_first_street_risk(self, lat: float, lon: float) -> ClimateRiskResponse:
+        """Fetch real climate risk data from First Street Foundation API."""
+        config = self.configs[APIProvider.FIRST_STREET]
+        url = config.base_url or "https://api.firststreet.org/v3/graphql"
+
+        query = """
+        query GetClimateRisk($lat: Float!, $lng: Float!) {
+          placeByCoordinate(lat: $lat, lng: $lng) {
+            placeId
+            flood {
+              data {
+                floodFactors {
+                  floodFactor
+                  ssp
+                  relativeYear
+                }
+                floodDamages {
+                  aal {
+                    aal
+                    ssp
+                    relativeYear
+                  }
+                }
+              }
+            }
+            wildfire {
+              data {
+                fireFactors {
+                  fireFactor
+                  ssp
+                  relativeYear
+                }
+                wildfireDamages {
+                  aal {
+                    aal
+                    ssp
+                    relativeYear
+                  }
+                }
+              }
+            }
+            heat {
+              data {
+                heatFactors {
+                  heatFactor
+                  ssp
+                  relativeYear
+                }
+              }
+            }
+            wind {
+              data {
+                windFactors {
+                  windFactor
+                  ssp
+                  relativeYear
+                }
+                windDamages {
+                  aal {
+                    aal
+                    ssp
+                    relativeYear
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+        response = requests.post(
+            url,
+            json={'query': query, 'variables': {'lat': lat, 'lng': lon}},
+            headers={'Authorization': f'Bearer {config.api_key}'},
+            timeout=10
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        if 'errors' in data:
+            raise ValueError(f"GraphQL Error: {data['errors']}")
+
+        place = data.get('data', {}).get('placeByCoordinate')
+        if not place:
+            raise ValueError("No place data returned for coordinates")
+
+        # Filter helper for SSP_2_45 and relativeYear 0
+        def find_current_scenario(items):
+            if not items:
+                return None
+            for item in items:
+                if item.get('ssp') == 'SSP_2_45' and item.get('relativeYear') == 0:
+                    return item
+            # Fallback to first item if exact match not found
+            return items[0]
+
+        # Helper to safely extract factor
+        def get_factor(peril_data, factor_key, list_key=None):
+            if not peril_data or 'data' not in peril_data:
+                return 1
+            factors = peril_data['data'].get(list_key or f"{factor_key}s", [])
+            factor_item = find_current_scenario(factors)
+
+            if not factor_item:
+                return 1
+
+            val = factor_item.get(factor_key, 1)
+            # Normalize 1-100 scale to 1-10.
+            normalized = math.ceil(val / 10.0)
+            return max(1, min(10, normalized))
+
+        # Helper to extract AAL (Annualized Average Loss)
+        def get_aal(peril_data, damages_key):
+            if not peril_data or 'data' not in peril_data:
+                return 0
+            damages = peril_data['data'].get(damages_key, {})
+            if not damages:
+                return 0
+            aals = damages.get('aal', [])
+            aal_item = find_current_scenario(aals)
+
+            if not aal_item:
+                return 0
+            return float(aal_item.get('aal', 0))
+
+        flood = get_factor(place.get('flood'), 'floodFactor')
+        fire = get_factor(place.get('wildfire'), 'fireFactor', 'fireFactors')
+        heat = get_factor(place.get('heat'), 'heatFactor')
+        wind = get_factor(place.get('wind'), 'windFactor')
+
+        overall = int((flood * 0.3 + fire * 0.3 + heat * 0.2 + wind * 0.2))
+
+        # Calculate insurance estimate from AALs
+        flood_aal = get_aal(place.get('flood'), 'floodDamages')
+        fire_aal = get_aal(place.get('wildfire'), 'wildfireDamages')
+        wind_aal = get_aal(place.get('wind'), 'windDamages')
+
+        total_aal = flood_aal + fire_aal + wind_aal
+
+        # If AAL data is missing or zero, fallback to heuristic
+        if total_aal <= 0:
+            base_insurance = 1500
+            risk_multiplier = 1 + (overall - 3) * 0.15
+            insurance_estimate = round(base_insurance * risk_multiplier, 0)
+        else:
+            # Insurance premium usually covers AAL + overhead/profit + buffer
+            # Rough multiplier of 2x-3x AAL is common in simple models, but let's stick to a safe 1.2x + base if AAL is low
+            insurance_estimate = round(total_aal * 1.5 + 500, 0)
+
+        return ClimateRiskResponse(
+            flood_factor=flood,
+            fire_factor=fire,
+            heat_factor=heat,
+            wind_factor=wind,
+            overall_risk=overall,
+            insurance_estimate=insurance_estimate,
+            source=APIProvider.FIRST_STREET,
+        )
+
     def _mock_zoning(self, lat: float, lon: float) -> ZoningAPIResponse:
         """Generate mock zoning data."""
         # Use a local random instance to avoid global state modification
