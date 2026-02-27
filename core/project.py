@@ -458,6 +458,8 @@ class ProjectManager:
                     settings JSON
                 )
             """)
+            # Create index for faster sorting
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_projects_created_at ON projects(created_at DESC)")
 
     def _sync_index_if_needed(self):
         """Syncs the index from files if the index is empty but files exist."""
@@ -524,10 +526,25 @@ class ProjectManager:
                 """)
                 rows = cursor.fetchall()
 
+                # Pre-resolve lookups for performance optimization
+                _json_loads = json.loads
+                _BoundingBox_from_dict = BoundingBox.from_dict
+                _ProjectSettings_from_dict = ProjectSettings.from_dict
+                _Project = Project
+
                 for row in rows:
                     try:
-                        # Reconstruct Project object from DB row
-                        project = Project(
+                        # Optimization: Avoid repeated lookups inside the loop
+                        stats_json = row["stats"]
+                        stats = _json_loads(stats_json) if stats_json else {}
+
+                        bounds_data = _json_loads(row["bounds"])
+                        bounds = _BoundingBox_from_dict(bounds_data)
+
+                        settings_data = _json_loads(row["settings"])
+                        settings = _ProjectSettings_from_dict(settings_data)
+
+                        project = _Project(
                             id=row["id"],
                             name=row["name"],
                             description=row["description"] or "",
@@ -536,9 +553,9 @@ class ProjectManager:
                             updated_at=row["updated_at"],
                             points_collected=row["points_collected"],
                             error_message=row["error_message"],
-                            stats=json.loads(row["stats"]) if row["stats"] else {},
-                            bounds=BoundingBox.from_dict(json.loads(row["bounds"])),
-                            settings=ProjectSettings.from_dict(json.loads(row["settings"]))
+                            stats=stats,
+                            bounds=bounds,
+                            settings=settings
                         )
                         projects.append(project)
                     except Exception as e:
