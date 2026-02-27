@@ -16,6 +16,12 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# Try to import OneBuildClient, but don't fail if it's missing
+try:
+    from core.onebuild_client import OneBuildClient
+except ImportError:
+    OneBuildClient = None
+
 
 class APIProvider(Enum):
     """External API providers."""
@@ -210,7 +216,53 @@ class APIIntegrationLayer:
         if self.use_mock or not self._is_enabled(APIProvider.ONEBUILD):
             return self._mock_construction_costs(latitude, longitude, building_type, sqft)
         
-        # Real API Implementation
+        # Priority 1: Try using the dedicated OneBuildClient if available
+        if OneBuildClient:
+            try:
+                client = OneBuildClient(api_key=self.configs[APIProvider.ONEBUILD].api_key)
+                if client.is_configured():
+                    items = client.get_cost_data(building_type)
+
+                    if items:
+                        material_costs = {}
+                        labor_costs = {}
+                        total_material = 0.0
+                        total_labor = 0.0
+
+                        for item in items:
+                            cost_contribution = item.price
+                            if item.category == 'material':
+                                material_costs[item.name] = cost_contribution * sqft
+                                total_material += cost_contribution
+                            else:
+                                labor_costs[item.name] = cost_contribution * sqft
+                                total_labor += cost_contribution
+
+                        cost_per_sqft = total_material + total_labor
+
+                        min_expected_cost = 150.0
+                        if 0 < cost_per_sqft < min_expected_cost:
+                            scale_factor = min_expected_cost / cost_per_sqft
+                            cost_per_sqft *= scale_factor
+                            for k in material_costs: material_costs[k] *= scale_factor
+                            for k in labor_costs: labor_costs[k] *= scale_factor
+
+                        total_estimate = (sum(material_costs.values()) + sum(labor_costs.values()))
+
+                        return ConstructionCostResponse(
+                            cost_per_sqft=round(cost_per_sqft, 2),
+                            location_factor=1.0,
+                            material_costs=material_costs,
+                            labor_costs=labor_costs,
+                            total_estimate=round(total_estimate, 0),
+                            confidence=0.9,
+                            source=APIProvider.ONEBUILD,
+                        )
+            except Exception as e:
+                log.error(f"Error using OneBuildClient: {e}")
+                # Continue to fallback
+
+        # Priority 2: Direct API call (fallback implementation)
         try:
             config = self.configs[APIProvider.ONEBUILD]
 
