@@ -13,6 +13,7 @@ import hashlib
 import os
 import requests
 import logging
+import math
 
 # Configure logging
 log = logging.getLogger(__name__)
@@ -390,7 +391,8 @@ class APIIntegrationLayer:
         self,
         latitude: float,
         longitude: float,
-        roof_sqft: float
+        roof_sqft: float,
+        electricity_rate: float = 0.15
     ) -> SolarPotentialResponse:
         """Get solar generation potential."""
         if self.use_mock or not self._is_enabled(APIProvider.GOOGLE_SOLAR):
@@ -401,8 +403,7 @@ class APIIntegrationLayer:
             try:
                 client = self._get_solar_client()
                 if client:
-                    # Assuming standard electricity rate or from config, using default 0.15 for now as per mock
-                    return self._get_real_solar_potential(client, latitude, longitude, 0.15)
+                    return self._get_real_solar_potential(client, latitude, longitude, electricity_rate)
             except Exception as e:
                 log.error(f"Error using Google Solar Client: {e}")
                 # Fallback to direct request
@@ -713,14 +714,15 @@ class APIIntegrationLayer:
         longitude: float,
         roof_sqft: float = 2000,
         building_type: str = 'wood_frame',
-        sqft: float = 10000
+        sqft: float = 10000,
+        electricity_rate: float = 0.15
     ) -> Dict[str, Any]:
         """Get all available data for a location."""
         return {
             'zoning': self.get_zoning(latitude, longitude),
             'construction': self.get_construction_costs(latitude, longitude, building_type, sqft),
             'climate': self.get_climate_risk(latitude, longitude),
-            'solar': self.get_solar_potential(latitude, longitude, roof_sqft),
+            'solar': self.get_solar_potential(latitude, longitude, roof_sqft, electricity_rate),
         }
 
 
