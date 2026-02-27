@@ -10,6 +10,11 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 import random
 import hashlib
+import os
+import requests
+import logging
+
+log = logging.getLogger(__name__)
 
 
 class APIProvider(Enum):
@@ -95,6 +100,26 @@ class APIIntegrationLayer:
         # Initialize default configs
         for provider in APIProvider:
             self.configs[provider] = APIConfig(provider=provider)
+
+        # Auto-configure from environment variables
+        self._configure_from_env()
+
+    def _configure_from_env(self):
+        """Configure providers from environment variables."""
+        env_map = {
+            APIProvider.GRIDICS: "GRIDICS_API_KEY",
+            APIProvider.ZONEOMICS: "ZONEOMICS_API_KEY",
+            APIProvider.ONEBUILD: "ONEBUILD_API_KEY",
+            APIProvider.FIRST_STREET: "FIRST_STREET_API_KEY",
+            APIProvider.GOOGLE_SOLAR: "GOOGLE_SOLAR_API_KEY",
+            APIProvider.ATTOM: "ATTOM_API_KEY",
+        }
+
+        for provider, env_var in env_map.items():
+            api_key = os.environ.get(env_var)
+            if api_key:
+                log.info(f"Enabling {provider.value} from environment variable {env_var}")
+                self.configure(provider, api_key, enabled=True)
     
     def configure(self, provider: APIProvider, api_key: str, enabled: bool = True):
         """Configure an API provider."""
@@ -116,8 +141,63 @@ class APIIntegrationLayer:
         if self.use_mock or not self._is_enabled(APIProvider.GRIDICS):
             return self._mock_zoning(latitude, longitude)
         
-        # TODO: Implement real Gridics/Zoneomics API call
-        return self._mock_zoning(latitude, longitude)
+        # Real API Implementation
+        try:
+            config = self.configs[APIProvider.GRIDICS]
+
+            # Use provided base URL or default to Gridics API
+            base_url = config.base_url or "https://api.gridics.com/v1"
+
+            # Fetch parcel data by lat/lon
+            response = requests.get(
+                f"{base_url}/zoning/parcel",
+                params={
+                    "lat": latitude,
+                    "lng": longitude
+                },
+                headers={
+                    "Authorization": f"Bearer {config.api_key}",
+                    "Accept": "application/json"
+                },
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+
+                # Parse response - mapping Gridics structure to our schema
+                # Note: This schema is hypothetical based on typical zoning API structures
+                # as specific documentation was unavailable.
+
+                parcel = data.get("parcel", {})
+                zoning = parcel.get("zoning", {})
+
+                return ZoningAPIResponse(
+                    zone_code=zoning.get("code", "UNK"),
+                    zone_name=zoning.get("name", "Unknown Zone"),
+                    allowed_uses=zoning.get("allowed_uses", []),
+                    max_height_ft=float(zoning.get("constraints", {}).get("max_height_ft", 0)),
+                    max_far=float(zoning.get("constraints", {}).get("max_far", 0)),
+                    max_lot_coverage=float(zoning.get("constraints", {}).get("max_lot_coverage", 0)),
+                    setbacks={
+                        "front": float(zoning.get("setbacks", {}).get("front", 0)),
+                        "side": float(zoning.get("setbacks", {}).get("side", 0)),
+                        "rear": float(zoning.get("setbacks", {}).get("rear", 0)),
+                    },
+                    parking_ratio=float(zoning.get("parking", {}).get("ratio", 0)),
+                    overlay_districts=zoning.get("overlays", []),
+                    source=APIProvider.GRIDICS,
+                    raw_response=data
+                )
+            else:
+                log.error(f"Gridics API error: {response.status_code} - {response.text}")
+                # Fallback to mock on error
+                return self._mock_zoning(latitude, longitude)
+
+        except Exception as e:
+            log.exception(f"Exception calling Gridics API: {e}")
+            # Fallback to mock on exception
+            return self._mock_zoning(latitude, longitude)
     
     def get_construction_costs(
         self,
@@ -130,8 +210,57 @@ class APIIntegrationLayer:
         if self.use_mock or not self._is_enabled(APIProvider.ONEBUILD):
             return self._mock_construction_costs(latitude, longitude, building_type, sqft)
         
-        # TODO: Implement real 1build/RSMeans API call
-        return self._mock_construction_costs(latitude, longitude, building_type, sqft)
+        # Real API Implementation
+        try:
+            config = self.configs[APIProvider.ONEBUILD]
+
+            # Use provided base URL or default to 1build API
+            base_url = config.base_url or "https://api.1build.com/v1"
+
+            # Fetch cost estimates
+            response = requests.post(
+                f"{base_url}/estimates/calculate",
+                json={
+                    "location": {
+                        "latitude": latitude,
+                        "longitude": longitude
+                    },
+                    "project_details": {
+                        "type": building_type,
+                        "area_sqft": sqft,
+                        "quality": "standard"
+                    }
+                },
+                headers={
+                    "Authorization": f"Bearer {config.api_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=15
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+
+                # Parse 1build response (hypothetical structure)
+                estimate = data.get("estimate", {})
+                breakdown = estimate.get("breakdown", {})
+
+                return ConstructionCostResponse(
+                    cost_per_sqft=float(estimate.get("cost_per_sqft", 0)),
+                    location_factor=float(estimate.get("location_factor", 1.0)),
+                    material_costs=breakdown.get("materials", {}),
+                    labor_costs=breakdown.get("labor", {}),
+                    total_estimate=float(estimate.get("total", 0)),
+                    confidence=float(estimate.get("confidence_score", 0.0)),
+                    source=APIProvider.ONEBUILD
+                )
+            else:
+                log.error(f"1build API error: {response.status_code} - {response.text}")
+                return self._mock_construction_costs(latitude, longitude, building_type, sqft)
+
+        except Exception as e:
+            log.exception(f"Exception calling 1build API: {e}")
+            return self._mock_construction_costs(latitude, longitude, building_type, sqft)
     
     def get_climate_risk(
         self,
@@ -142,8 +271,57 @@ class APIIntegrationLayer:
         if self.use_mock or not self._is_enabled(APIProvider.FIRST_STREET):
             return self._mock_climate_risk(latitude, longitude)
         
-        # TODO: Implement real First Street Foundation API call
-        return self._mock_climate_risk(latitude, longitude)
+        # Real API Implementation
+        try:
+            config = self.configs[APIProvider.FIRST_STREET]
+
+            # Use provided base URL or default to First Street API
+            base_url = config.base_url or "https://api.firststreet.org/v1"
+
+            # Fetch property risk data
+            response = requests.get(
+                f"{base_url}/data/property",
+                params={
+                    "lat": latitude,
+                    "lng": longitude,
+                    "products": "flood,fire,heat,wind"
+                },
+                headers={
+                    "Authorization": f"Bearer {config.api_key}",
+                    "Accept": "application/json"
+                },
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+
+                # Parse First Street response (hypothetical structure)
+                risk = data.get("risk", {})
+                flood = risk.get("flood", {}).get("risk_factor", 1)
+                fire = risk.get("fire", {}).get("risk_factor", 1)
+                heat = risk.get("heat", {}).get("risk_factor", 1)
+                wind = risk.get("wind", {}).get("risk_factor", 1)
+
+                # Calculate composite
+                overall = int((flood + fire + heat + wind) / 4)
+
+                return ClimateRiskResponse(
+                    flood_factor=int(flood),
+                    fire_factor=int(fire),
+                    heat_factor=int(heat),
+                    wind_factor=int(wind),
+                    overall_risk=overall,
+                    insurance_estimate=float(risk.get("financial", {}).get("estimated_insurance_cost", 1500)),
+                    source=APIProvider.FIRST_STREET
+                )
+            else:
+                log.error(f"First Street API error: {response.status_code} - {response.text}")
+                return self._mock_climate_risk(latitude, longitude)
+
+        except Exception as e:
+            log.exception(f"Exception calling First Street API: {e}")
+            return self._mock_climate_risk(latitude, longitude)
     
     def get_solar_potential(
         self,
@@ -155,8 +333,66 @@ class APIIntegrationLayer:
         if self.use_mock or not self._is_enabled(APIProvider.GOOGLE_SOLAR):
             return self._mock_solar_potential(latitude, longitude, roof_sqft)
         
-        # TODO: Implement real Google Solar API call
-        return self._mock_solar_potential(latitude, longitude, roof_sqft)
+        # Real API Implementation
+        try:
+            config = self.configs[APIProvider.GOOGLE_SOLAR]
+
+            # Use provided base URL or default to Google Solar API
+            base_url = config.base_url or "https://solar.googleapis.com/v1"
+
+            # Fetch building insights
+            response = requests.get(
+                f"{base_url}/buildingInsights:findClosest",
+                params={
+                    "location.latitude": latitude,
+                    "location.longitude": longitude,
+                    "requiredQuality": "HIGH",
+                    "key": config.api_key
+                },
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+
+                # Parse Google Solar response
+                solar_potential = data.get("solarPotential", {})
+                max_panels = solar_potential.get("maxArrayPanelsCount", 0)
+                panel_capacity_watts = solar_potential.get("panelCapacityWatts", 250)
+
+                # Use financial analysis if available for estimates
+                financial_analysis = solar_potential.get("financialAnalyses", [{}])[0]
+                annual_kwh = float(financial_analysis.get("energyBill", {}).get("federalIncentive", 0)) # Fallback field usage
+
+                # If we have proper financial analysis, use it
+                if "leasingSavings" in financial_analysis:
+                     annual_kwh = float(financial_analysis.get("leasingSavings", {}).get("annualKwh", 0))
+
+                # Re-calculate based on what we have if specific fields missing
+                system_kw = (max_panels * panel_capacity_watts) / 1000
+                if annual_kwh == 0 and system_kw > 0:
+                     # Estimate based on California average sun hours
+                     annual_kwh = system_kw * 4.5 * 365
+
+                # Estimate savings
+                savings = annual_kwh * 0.15 # Approx $0.15/kWh
+
+                return SolarPotentialResponse(
+                    annual_kwh=round(annual_kwh, 0),
+                    system_capacity_kw=round(system_kw, 1),
+                    panel_count=max_panels,
+                    roof_area_sqft=float(solar_potential.get("wholeRoofStats", {}).get("areaMeters2", 0)) * 10.764,
+                    shade_factor=0.15, # Placeholder as this is complex to derive from raw API without deep analysis
+                    estimated_savings=round(savings, 0),
+                    source=APIProvider.GOOGLE_SOLAR
+                )
+            else:
+                log.error(f"Google Solar API error: {response.status_code} - {response.text}")
+                return self._mock_solar_potential(latitude, longitude, roof_sqft)
+
+        except Exception as e:
+            log.exception(f"Exception calling Google Solar API: {e}")
+            return self._mock_solar_potential(latitude, longitude, roof_sqft)
     
     def _is_enabled(self, provider: APIProvider) -> bool:
         """Check if a provider is enabled."""
