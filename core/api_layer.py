@@ -16,6 +16,11 @@ import math
 
 logger = logging.getLogger(__name__)
 
+try:
+    from core.onebuild_client import OneBuildClient
+except ImportError:
+    OneBuildClient = None
+
 
 class APIProvider(Enum):
     """External API providers."""
