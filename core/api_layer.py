@@ -14,6 +14,7 @@ import os
 import requests
 import logging
 
+# Configure logging
 log = logging.getLogger(__name__)
 
 # Try to import OneBuildClient, but don't fail if it's missing
@@ -21,6 +22,15 @@ try:
     from core.onebuild_client import OneBuildClient
 except ImportError:
     OneBuildClient = None
+
+# Import Google Maps Solar API client if available
+try:
+    from google.maps import solar_v1
+    from google.api_core.client_options import ClientOptions
+    GOOGLE_SOLAR_AVAILABLE = True
+except ImportError:
+    GOOGLE_SOLAR_AVAILABLE = False
+    log.warning("Google Maps Solar API client not installed. Real solar data unavailable.")
 
 
 class APIProvider(Enum):
@@ -102,6 +112,7 @@ class APIIntegrationLayer:
     def __init__(self):
         self.configs: Dict[APIProvider, APIConfig] = {}
         self.use_mock = True  # Default to mock data
+        self._solar_client = None
         
         # Initialize default configs
         for provider in APIProvider:
@@ -385,7 +396,18 @@ class APIIntegrationLayer:
         if self.use_mock or not self._is_enabled(APIProvider.GOOGLE_SOLAR):
             return self._mock_solar_potential(latitude, longitude, roof_sqft)
         
-        # Real API Implementation
+        # Priority 1: Use the official Google Solar API client if available
+        if GOOGLE_SOLAR_AVAILABLE:
+            try:
+                client = self._get_solar_client()
+                if client:
+                    # Assuming standard electricity rate or from config, using default 0.15 for now as per mock
+                    return self._get_real_solar_potential(client, latitude, longitude, 0.15)
+            except Exception as e:
+                log.error(f"Error using Google Solar Client: {e}")
+                # Fallback to direct request
+
+        # Priority 2: Direct API Implementation (fallback)
         try:
             config = self.configs[APIProvider.GOOGLE_SOLAR]
 
@@ -445,6 +467,78 @@ class APIIntegrationLayer:
         except Exception as e:
             log.exception(f"Exception calling Google Solar API: {e}")
             return self._mock_solar_potential(latitude, longitude, roof_sqft)
+
+    def _get_solar_client(self) -> Optional[Any]:
+        """Get or initialize the Google Solar API client."""
+        if self._solar_client:
+            return self._solar_client
+
+        if not GOOGLE_SOLAR_AVAILABLE:
+            return None
+
+        config = self.configs.get(APIProvider.GOOGLE_SOLAR)
+        if not config or not config.api_key:
+            return None
+
+        # Initialize client with API key
+        options = ClientOptions(api_key=config.api_key)
+        self._solar_client = solar_v1.SolarClient(client_options=options)
+        return self._solar_client
+
+    def _get_real_solar_potential(
+        self,
+        client: Any,
+        latitude: float,
+        longitude: float,
+        electricity_rate: float
+    ) -> SolarPotentialResponse:
+        """Fetch real solar potential from Google Solar API using client."""
+        # Create request
+        request = solar_v1.FindClosestBuildingInsightsRequest(
+            location={
+                "latitude": latitude,
+                "longitude": longitude
+            },
+            required_quality="HIGH"
+        )
+
+        # Call API
+        response = client.find_closest_building_insights(request=request)
+
+        if not response.solar_potential:
+             raise ValueError("No solar potential data found for location")
+
+        potential = response.solar_potential
+
+        # Extract data
+        # max_array_panels_count is total potential panels
+        panel_count = potential.max_array_panels_count
+
+        # max_array_area_meters2 to sqft (1 m2 = 10.764 sqft)
+        roof_area_sqft = potential.max_array_area_meters2 * 10.7639
+
+        # sunshine hours
+        sun_hours = potential.max_sunshine_hours_per_year
+
+        # Capacity (kW)
+        panel_capacity_watts = potential.panel_capacity_watts
+        system_capacity_kw = (panel_count * panel_capacity_watts) / 1000.0
+
+        # Annual kWh calculation
+        annual_kwh = system_capacity_kw * sun_hours * 0.8 # 0.8 system efficiency derate
+
+        # Savings
+        estimated_savings = annual_kwh * electricity_rate
+
+        return SolarPotentialResponse(
+            annual_kwh=round(annual_kwh, 0),
+            system_capacity_kw=round(system_capacity_kw, 1),
+            panel_count=panel_count,
+            roof_area_sqft=round(roof_area_sqft, 0),
+            shade_factor=0.15,
+            estimated_savings=round(estimated_savings, 0),
+            source=APIProvider.GOOGLE_SOLAR,
+        )
     
     def _is_enabled(self, provider: APIProvider) -> bool:
         """Check if a provider is enabled."""
