@@ -48,9 +48,12 @@ class MLEngine:
     
     def load_training_data(
         self, 
-        filepath: str = "training_dataset.jsonl"
+        filepath: Optional[str] = None
     ) -> Tuple[pd.DataFrame, pd.Series]:
         """Load and prepare data from JSONL file."""
+        if filepath is None:
+            filepath = os.path.join(self.model_dir, "training_dataset.jsonl")
+
         data = []
         with open(filepath, "r") as f:
             for line in f:
