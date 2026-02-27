@@ -19,6 +19,7 @@ from dataclasses import dataclass, asdict
 import logging
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential
+import numpy as np
 
 log = logging.getLogger(__name__)
 
@@ -242,6 +243,24 @@ class OSMLoader:
         
         return R * c
     
+    def _batch_haversine_distances(self, lat1: float, lon1: float, lats: np.ndarray, lons: np.ndarray) -> np.ndarray:
+        """Calculate distances between a point and multiple points in meters using vectorization."""
+        R = 6371000  # Earth's radius in meters
+
+        phi1 = np.radians(lat1)
+        phi2 = np.radians(lats)
+        delta_phi = np.radians(lats - lat1)
+        delta_lambda = np.radians(lons - lon1)
+
+        a = np.sin(delta_phi/2)**2 + np.cos(phi1) * np.cos(phi2) * np.sin(delta_lambda/2)**2
+
+        # Clip 'a' to [0, 1] to avoid domain errors in sqrt/arcsin due to floating point noise
+        a = np.clip(a, 0, 1)
+
+        c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
+
+        return R * c
+
     def fetch_land_use(self, lat: float, lon: float, radius: int = 500) -> LandUseData:
         """
         Fetch and analyze land use data for a location.
@@ -265,29 +284,65 @@ class OSMLoader:
             "natural": 0,
         }
         
-        # Process each element
+        # Pre-process elements to separate coordinates and tags
+        element_data = []
+        lats = []
+        lons = []
+
         for el in elements:
-            tags = el.get("tags", {})
-            
             # Get element position
             el_lat = el.get("lat") or el.get("center", {}).get("lat")
             el_lon = el.get("lon") or el.get("center", {}).get("lon")
             
-            if el_lat is None or el_lon is None:
-                continue
-            
-            distance = self._haversine_distance(lat, lon, el_lat, el_lon)
+            if el_lat is not None and el_lon is not None:
+                element_data.append(el)
+                lats.append(el_lat)
+                lons.append(el_lon)
+
+        # If no elements, return default
+        if not element_data:
+             return LandUseData(
+                latitude=lat,
+                longitude=lon,
+                primary_land_use="unknown",
+                land_use_confidence=0.0,
+                nearest_road_meters=radius,
+                road_type="none",
+                nearest_water_meters=radius,
+                water_type="none",
+                has_road_access=False,
+                has_water_nearby=False,
+                has_buildings=False,
+                building_count=0,
+                is_industrial=False,
+                is_residential=False,
+                is_commercial=False,
+                is_agricultural=False,
+                is_natural=False,
+            )
+
+        # Vectorized distance calculation
+        distances = self._batch_haversine_distances(
+            lat, lon,
+            np.array(lats, dtype=np.float64),
+            np.array(lons, dtype=np.float64)
+        )
+
+        # Process each element with pre-calculated distance
+        for i, el in enumerate(element_data):
+            tags = el.get("tags", {})
+            distance = distances[i]
             
             # Check for roads
             if "highway" in tags:
                 if distance < nearest_road:
-                    nearest_road = distance
+                    nearest_road = float(distance)
                     road_type = tags["highway"]
             
             # Check for water
             if "waterway" in tags or tags.get("natural") == "water":
                 if distance < nearest_water:
-                    nearest_water = distance
+                    nearest_water = float(distance)
                     water_type = tags.get("waterway") or "water"
             
             # Check for buildings
@@ -321,9 +376,9 @@ class OSMLoader:
         
         # Cap distances at radius if nothing found
         if nearest_road == float('inf'):
-            nearest_road = radius
+            nearest_road = float(radius)
         if nearest_water == float('inf'):
-            nearest_water = radius
+            nearest_water = float(radius)
         
         return LandUseData(
             latitude=lat,
