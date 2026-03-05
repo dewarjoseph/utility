@@ -368,48 +368,52 @@ class Project:
         except Exception as e:
             log.error(f"Failed to update project index: {e}")
 
-    def _update_index(self):
+    def _update_index(self, conn: Optional[sqlite3.Connection] = None):
         """Update the central SQLite index with this project's metadata."""
-        # Ensure the index directory exists
-        INDEX_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if conn is None:
+            # Ensure the index directory exists
+            INDEX_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(INDEX_DB_PATH) as new_conn:
+                # Ensure table exists for standalone saves
+                new_conn.execute("""
+                    CREATE TABLE IF NOT EXISTS projects (
+                        id TEXT PRIMARY KEY,
+                        name TEXT,
+                        description TEXT,
+                        status TEXT,
+                        created_at TEXT,
+                        updated_at TEXT,
+                        points_collected INTEGER,
+                        error_message TEXT,
+                        stats JSON,
+                        bounds JSON,
+                        settings JSON
+                    )
+                """)
+                self._perform_index_update(new_conn)
+        else:
+            self._perform_index_update(conn)
 
-        # Connect to DB (create if needed, but schema creation is handled by Manager usually)
-        # We'll use a pragmatic approach: if table missing, create it here just in case
-        with sqlite3.connect(INDEX_DB_PATH) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS projects (
-                    id TEXT PRIMARY KEY,
-                    name TEXT,
-                    description TEXT,
-                    status TEXT,
-                    created_at TEXT,
-                    updated_at TEXT,
-                    points_collected INTEGER,
-                    error_message TEXT,
-                    stats JSON,
-                    bounds JSON,
-                    settings JSON
-                )
-            """)
-
-            conn.execute("""
-                INSERT OR REPLACE INTO projects (
-                    id, name, description, status, created_at, updated_at,
-                    points_collected, error_message, stats, bounds, settings
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                self.id,
-                self.name,
-                self.description,
-                self.status,
-                self.created_at,
-                self.updated_at,
-                self.points_collected,
-                self.error_message,
-                json.dumps(self.stats),
-                json.dumps(self.bounds.to_dict()),
-                json.dumps(self.settings.to_dict())
-            ))
+    def _perform_index_update(self, conn: sqlite3.Connection):
+        """Internal helper to update the index using an existing connection."""
+        conn.execute("""
+            INSERT OR REPLACE INTO projects (
+                id, name, description, status, created_at, updated_at,
+                points_collected, error_message, stats, bounds, settings
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            self.id,
+            self.name,
+            self.description,
+            self.status,
+            self.created_at,
+            self.updated_at,
+            self.points_collected,
+            self.error_message,
+            json.dumps(self.stats),
+            json.dumps(self.bounds.to_dict()),
+            json.dumps(self.settings.to_dict())
+        ))
 
     
     @classmethod
@@ -466,17 +470,30 @@ class ProjectManager:
         with sqlite3.connect(INDEX_DB_PATH) as conn:
             count = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
 
-        if count == 0 and any(self.PROJECTS_DIR.iterdir()):
-            # Only sync if there are folders but no DB entries
-            log.info("Index empty but projects exist. Rebuilding index...")
-            for folder in self.PROJECTS_DIR.iterdir():
-                if folder.is_dir() and (folder / "project.json").exists():
+            if count == 0:
+                # Use a single connection/transaction for rebuilding the entire index
+                # We also avoid redundant directory iterations by just checking if any project folders exist
+                project_folders = [
+                    f for f in self.PROJECTS_DIR.iterdir()
+                    if f.is_dir() and (f / "project.json").exists()
+                ]
+
+                if project_folders:
+                    log.info(f"Index empty but {len(project_folders)} projects exist. Rebuilding index...")
+                    # Begin a single transaction for efficiency
+                    conn.execute("BEGIN TRANSACTION")
                     try:
-                        project = Project.load(folder.name)
-                        if project:
-                            project._update_index()
+                        for folder in project_folders:
+                            try:
+                                project = Project.load(folder.name)
+                                if project:
+                                    project._update_index(conn=conn)
+                            except Exception as e:
+                                log.error(f"Failed to sync project {folder.name}: {e}")
+                        conn.commit()
                     except Exception as e:
-                        log.error(f"Failed to sync project {folder.name}: {e}")
+                        conn.rollback()
+                        log.error(f"Failed to rebuild project index: {e}")
 
     def create_project(
         self,
