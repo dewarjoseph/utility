@@ -64,3 +64,4 @@ Thumbs.db
 # Lock files
 *.lock
 poetry.lock
+test_benchmark_projects/

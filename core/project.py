@@ -480,16 +480,49 @@ class ProjectManager:
 
                 if project_folders:
                     log.info(f"Index empty but {len(project_folders)} projects exist. Rebuilding index...")
-                    # Begin a single transaction for efficiency
-                    conn.execute("BEGIN TRANSACTION")
+
+                    def extract_project_data(folder_path):
+                        try:
+                            with open(folder_path / "project.json", "r") as f:
+                                data = json.load(f)
+
+                            # Provide defaults mirroring from_dict
+                            return (
+                                data.get("id", folder_path.name),
+                                data.get("name", ""),
+                                data.get("description", ""),
+                                data.get("status", ProjectStatus.CREATED),
+                                data.get("created_at", datetime.now().isoformat()),
+                                data.get("updated_at", datetime.now().isoformat()),
+                                data.get("points_collected", 0),
+                                data.get("error_message"),
+                                json.dumps(data.get("stats", {})),
+                                json.dumps(data.get("bounds", {})),
+                                json.dumps(data.get("settings", {}))
+                            )
+                        except Exception as e:
+                            log.error(f"Failed to extract project data from {folder_path.name}: {e}")
+                            return None
+
+                    import concurrent.futures
+                    # Use ThreadPoolExecutor for concurrent I/O
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        results = list(executor.map(extract_project_data, project_folders))
+
                     try:
-                        for folder in project_folders:
-                            try:
-                                project = Project.load(folder.name)
-                                if project:
-                                    project._update_index(conn=conn)
-                            except Exception as e:
-                                log.error(f"Failed to sync project {folder.name}: {e}")
+                        # Filter out any failed extractions
+                        valid_results = [r for r in results if r is not None]
+
+                        if valid_results:
+                            # executemany already wraps execution in a single transaction
+                            # when using default isolation_level
+                            conn.executemany("""
+                                INSERT OR REPLACE INTO projects (
+                                    id, name, description, status, created_at, updated_at,
+                                    points_collected, error_message, stats, bounds, settings
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, valid_results)
+
                         conn.commit()
                     except Exception as e:
                         conn.rollback()
