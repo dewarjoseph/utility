@@ -124,6 +124,7 @@ def test_worker_stop_during_job(mock_worker):
 
     mock_worker.project_manager.get_project.return_value = project
     mock_worker._generate_features = MagicMock(return_value={})
+    mock_worker._generate_features_batch = MagicMock(return_value=[{}])
 
     # Mock queue to return the job once, then None.
     # Important: The worker loop continues calling claim_next.
