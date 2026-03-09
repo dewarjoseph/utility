@@ -81,16 +81,37 @@ class ElevationCache:
     
     def get_batch(self, points: List[Tuple[float, float]]) -> Dict[str, ElevationResult]:
         """Get cached elevations for multiple points."""
+        if not points:
+            return {}
+
         conn = sqlite3.connect(self.db_path)
         results = {}
+
+        # We need to map lat_lon_key back to lat, lon since it's a string in the DB
+        # and precision might be slightly lost if we just parse the string back.
+        # So we keep a map of key -> (lat, lon)
+        key_to_point = {}
+        keys = []
         for lat, lon in points:
             key = self._make_key(lat, lon)
-            row = conn.execute(
-                "SELECT elevation_m, data_source, resolution_m FROM elevation_cache WHERE lat_lon_key = ?",
-                (key,)
-            ).fetchone()
-            if row:
-                results[key] = ElevationResult(lat, lon, row[0], row[1], row[2])
+            keys.append(key)
+            key_to_point[key] = (lat, lon)
+
+        # SQLite max variables is often 999. Chunk by 900 to be safe.
+        CHUNK_SIZE = 900
+        for i in range(0, len(keys), CHUNK_SIZE):
+            chunk_keys = keys[i:i + CHUNK_SIZE]
+            placeholders = ",".join("?" * len(chunk_keys))
+            query = f"SELECT lat_lon_key, elevation_m, data_source, resolution_m FROM elevation_cache WHERE lat_lon_key IN ({placeholders})"
+
+            rows = conn.execute(query, chunk_keys).fetchall()
+            for row in rows:
+                key = row[0]
+                # Fallback in case of duplicate keys or unexpected issues
+                if key in key_to_point:
+                    lat, lon = key_to_point[key]
+                    results[key] = ElevationResult(lat, lon, row[1], row[2], row[3])
+
         conn.close()
         return results
 
