@@ -13,7 +13,7 @@ All with proper rate limiting, caching, and error handling.
 """
 
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass, asdict, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
@@ -189,6 +189,80 @@ class UnifiedDataFetcher:
                 log.warning("Demographics loader not available")
         return self._demographics
     
+    def fetch_all_batch(
+        self,
+        points: List[Tuple[float, float]],
+        osm_radius: int = 500
+    ) -> List[LocationData]:
+        """
+        Fetch data for multiple locations efficiently by batching and parallelizing across data sources.
+        """
+        if not points:
+            return []
+
+        # Initialize results list
+        results = [LocationData(latitude=p[0], longitude=p[1]) for p in points]
+        errors = [[] for _ in points]
+
+        # We will dispatch batch requests to the individual loaders
+        # Using a ThreadPoolExecutor to parallelize *across* the different loaders.
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {}
+
+            # 1. OSM Land Use batch
+            futures[executor.submit(self.osm.fetch_land_use_batch, points, osm_radius)] = "osm"
+
+            # 2. Elevation batch
+            futures[executor.submit(self.elevation.get_elevations_batch, points)] = "elevation"
+
+            # 3. Flood zones batch (FEMA is disabled in sequential fetch due to unreliable API,
+            # but we can omit the commented-out code to keep it clean)
+
+            # 4. Infrastructure batch
+            if self.infrastructure:
+                futures[executor.submit(self.infrastructure.fetch_infrastructure_batch, points, 5000)] = "infrastructure"
+
+            # 5. Demographics batch
+            if self.demographics:
+                futures[executor.submit(self.demographics.get_demographics_batch, points)] = "demographics"
+
+            # Collect results as they complete
+            for future in as_completed(futures):
+                source = futures[future]
+                try:
+                    batch_data = future.result()
+                    # Apply batch data to results
+                    for i, (point_data, data) in enumerate(zip(results, batch_data)):
+                        if data is not None:
+                            results[i] = self._apply_data(results[i], source, data)
+
+                        # Apply custom logic
+                        if source == "elevation" and data is not None:
+                            if data.elevation_meters < 5:
+                                results[i].flood_risk_level = "high"
+                                results[i].is_flood_risk = True
+                            elif data.elevation_meters < 15:
+                                results[i].flood_risk_level = "moderate"
+
+                        if source == "infrastructure" and data is not None:
+                            results[i].data_sources.append("OSM-Infra")
+
+                        if source == "demographics" and data is not None:
+                            if data.estimated:
+                                results[i].data_sources.append("Demographics-Est")
+                            else:
+                                results[i].data_sources.append("Census")
+                except Exception as e:
+                    log.error(f"Error fetching {source} batch: {e}")
+                    for err_list in errors:
+                        err_list.append(f"{source}: {str(e)}")
+
+        for i, res in enumerate(results):
+            res.fetch_errors = errors[i]
+            res.data_complete = len(errors[i]) == 0
+
+        return results
+
     def fetch_all(
         self, 
         lat: float, 

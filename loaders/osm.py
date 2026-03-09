@@ -177,6 +177,34 @@ class OSMLoader:
         );
         out center;
         """
+
+    def _build_bbox_query(self, min_lat: float, min_lon: float, max_lat: float, max_lon: float) -> str:
+        """Build comprehensive Overpass query for a bounding box."""
+        bbox = f"{min_lat},{min_lon},{max_lat},{max_lon}"
+        return f"""
+        [out:json][timeout:{self.timeout}];
+        (
+          // Roads and highways
+          way["highway"]({bbox});
+
+          // Water features
+          way["waterway"]({bbox});
+          way["natural"="water"]({bbox});
+          node["natural"="water"]({bbox});
+
+          // Land use
+          way["landuse"]({bbox});
+          relation["landuse"]({bbox});
+
+          // Buildings
+          way["building"]({bbox});
+
+          // Amenities and commercial
+          node["shop"]({bbox});
+          node["amenity"]({bbox});
+        );
+        out center;
+        """
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=2, max=15))
     def _make_request(self, query: str) -> Dict:
@@ -228,6 +256,42 @@ class OSMLoader:
         except Exception as e:
             log.error(f"OSM request failed: {e}")
             return {"elements": []}
+
+    def fetch_raw_bbox(self, min_lat: float, min_lon: float, max_lat: float, max_lon: float) -> Dict:
+        """
+        Fetch raw OSM data for a bounding box.
+
+        Args:
+            min_lat: Minimum latitude
+            min_lon: Minimum longitude
+            max_lat: Maximum latitude
+            max_lon: Maximum longitude
+
+        Returns:
+            Raw Overpass API response
+        """
+        # We'll use the center of the bounding box and a large radius for caching just to reuse the cache logic,
+        # but realistically, bounding box queries might not hit the cache perfectly unless we make a new cache mechanism.
+        # For this optimization, we will hash the bbox as the cache key instead.
+        lat = (min_lat + max_lat) / 2
+        lon = (min_lon + max_lon) / 2
+        # Use a radius representation for the cache key
+        radius = int(self._haversine_distance(min_lat, min_lon, max_lat, max_lon) / 2)
+
+        cached = self.cache.get(lat, lon, radius)
+        if cached:
+            log.debug(f"Cache hit for OSM bbox at ({lat}, {lon})")
+            return cached
+
+        query = self._build_bbox_query(min_lat, min_lon, max_lat, max_lon)
+        try:
+            data = self._make_request(query)
+            self.cache.set(lat, lon, radius, data)
+            log.info(f"OSM fetched {len(data.get('elements', []))} elements for bbox")
+            return data
+        except Exception as e:
+            log.error(f"OSM request failed for bbox: {e}")
+            return {"elements": []}
     
     def _haversine_distance(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         """Calculate distance between two points in meters."""
@@ -269,7 +333,44 @@ class OSMLoader:
         """
         raw_data = self.fetch_raw(lat, lon, radius)
         elements = raw_data.get("elements", [])
+        return self._process_elements(elements, lat, lon, radius)
+
+    def fetch_land_use_batch(self, points: List[Tuple[float, float]], radius: int = 500) -> List[LandUseData]:
+        """
+        Fetch and analyze land use data for a batch of locations.
+        Calculates a bounding box for the entire batch to make a single OSM API query.
+        """
+        if not points:
+            return []
+
+        # Calculate bounding box with a buffer matching the radius
+        # Roughly 1 degree of latitude is 111km. 1 meter is ~0.000009 degrees.
+        buffer_deg = (radius / 111000.0) * 1.1 # 10% extra margin
+
+        lats = [p[0] for p in points]
+        lons = [p[1] for p in points]
+
+        min_lat = min(lats) - buffer_deg
+        max_lat = max(lats) + buffer_deg
+
+        # Adjust longitude buffer based on latitude (longitude degrees shrink near poles)
+        avg_lat = sum(lats) / len(lats)
+        lon_buffer_deg = buffer_deg / max(0.1, math.cos(math.radians(avg_lat)))
+
+        min_lon = min(lons) - lon_buffer_deg
+        max_lon = max(lons) + lon_buffer_deg
+
+        raw_data = self.fetch_raw_bbox(min_lat, min_lon, max_lat, max_lon)
+        elements = raw_data.get("elements", [])
         
+        results = []
+        for lat, lon in points:
+            results.append(self._process_elements(elements, lat, lon, radius))
+
+        return results
+
+    def _process_elements(self, elements: List[Dict], lat: float, lon: float, radius: int) -> LandUseData:
+        """Process OSM elements and calculate features for a single point."""
         # Initialize tracking variables
         nearest_road = float('inf')
         road_type = "none"
@@ -333,6 +434,10 @@ class OSMLoader:
             tags = el.get("tags", {})
             distance = distances[i]
             
+            # Only consider elements within the radius for counts and primary land use
+            # but we can record nearest items even slightly outside if needed
+            is_within_radius = distance <= radius
+
             # Check for roads
             if "highway" in tags:
                 if distance < nearest_road:
@@ -345,26 +450,27 @@ class OSMLoader:
                     nearest_water = float(distance)
                     water_type = tags.get("waterway") or "water"
             
-            # Check for buildings
-            if "building" in tags:
-                building_count += 1
-            
-            # Check land use
-            landuse = tags.get("landuse", "")
-            if landuse in ["industrial", "quarry", "port"]:
-                land_uses["industrial"] += 1
-            elif landuse in ["residential"]:
-                land_uses["residential"] += 1
-            elif landuse in ["commercial", "retail"]:
-                land_uses["commercial"] += 1
-            elif landuse in ["farmland", "farm", "orchard", "vineyard"]:
-                land_uses["agricultural"] += 1
-            elif landuse in ["forest", "meadow", "grass", "nature_reserve"]:
-                land_uses["natural"] += 1
-            
-            # Commercial indicators
-            if "shop" in tags or tags.get("amenity") in ["restaurant", "cafe", "bank"]:
-                land_uses["commercial"] += 1
+            if is_within_radius:
+                # Check for buildings
+                if "building" in tags:
+                    building_count += 1
+
+                # Check land use
+                landuse = tags.get("landuse", "")
+                if landuse in ["industrial", "quarry", "port"]:
+                    land_uses["industrial"] += 1
+                elif landuse in ["residential"]:
+                    land_uses["residential"] += 1
+                elif landuse in ["commercial", "retail"]:
+                    land_uses["commercial"] += 1
+                elif landuse in ["farmland", "farm", "orchard", "vineyard"]:
+                    land_uses["agricultural"] += 1
+                elif landuse in ["forest", "meadow", "grass", "nature_reserve"]:
+                    land_uses["natural"] += 1
+
+                # Commercial indicators
+                if "shop" in tags or tags.get("amenity") in ["restaurant", "cafe", "bank"]:
+                    land_uses["commercial"] += 1
         
         # Determine primary land use
         if sum(land_uses.values()) > 0:

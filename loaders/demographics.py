@@ -9,7 +9,7 @@ import logging
 import os
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta
 import math
 
@@ -257,6 +257,22 @@ class DemographicsLoader:
         log.info(f"Demographics estimate for ({lat:.3f}, {lon:.3f}): pop={data.population_10km}, urban={data.urban_area}")
         
         return data
+
+    def get_demographics_batch(self, points: List[Tuple[float, float]]) -> List[Optional[DemographicsData]]:
+        """
+        Get demographics data for a batch of locations using thread pool.
+        """
+        results = []
+
+        def process_point(point):
+            lat, lon = point
+            return self.get_demographics(lat, lon)
+
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            results = list(executor.map(process_point, points))
+
+        return results
     
     def _distance_km(self, lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         """Calculate distance in kilometers."""

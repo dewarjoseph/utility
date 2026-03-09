@@ -48,7 +48,7 @@ class OneBuildClient:
         """Check if the client is configured with an API key."""
         return bool(self.api_key)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10), reraise=True)
     def _execute_query(self, query: str, variables: Dict[str, Any] = None) -> Dict[str, Any]:
         """Execute a GraphQL query against the 1Build API."""
         if not self.is_configured():

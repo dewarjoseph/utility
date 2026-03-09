@@ -212,6 +212,25 @@ class FloodZoneLoader:
         
         return result
 
+    def get_flood_zones_batch(self, points: List[Tuple[float, float]]) -> List[Optional[FloodZoneResult]]:
+        """
+        Get flood zones for multiple points using thread pool.
+        """
+        results = []
+
+        # Define a function to process a single point
+        def process_point(point):
+            lat, lon = point
+            return self.get_flood_zone(lat, lon)
+
+        # Use ThreadPoolExecutor to parallelize individual lookups
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            # We map directly so the results are in the same order as points
+            results = list(executor.map(process_point, points))
+
+        return results
+
 
 # Singleton
 _loader: Optional[FloodZoneLoader] = None

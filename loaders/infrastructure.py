@@ -172,6 +172,22 @@ class InfrastructureLoader:
                 log.warning("Overpass rate limit exceeded, backing off...")
             raise
     
+    def fetch_infrastructure_batch(self, points: List[Tuple[float, float]], radius: int = 5000) -> List[InfrastructureData]:
+        """
+        Fetch infrastructure data for a batch of locations using a thread pool.
+        """
+        results = []
+
+        def process_point(point):
+            lat, lon = point
+            return self.fetch_infrastructure(lat, lon, radius)
+
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            results = list(executor.map(process_point, points))
+
+        return results
+
     def fetch_infrastructure(
         self, 
         lat: float, 

@@ -18,7 +18,7 @@ import json
 import random
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 import logging
 
 # Add parent directory to path for imports
@@ -168,20 +168,26 @@ class Worker:
                 f"Scanned {points_collected}/{max_points} points"
             )
             
+            # Generate random points for this cycle
+            num_points = min(points_per_cycle, max_points - points_collected)
+            cycle_coords = []
+            for _ in range(num_points):
+                lat = random.uniform(bounds.min_latitude, bounds.max_latitude)
+                lon = random.uniform(bounds.min_longitude, bounds.max_longitude)
+                cycle_coords.append((lat, lon))
+
+            # Fetch all features in a single batch
+            features_list = self._generate_features_batch(cycle_coords)
+
             # Buffer for batch saving
             batch_points = []
 
-            # Generate and evaluate points
-            for _ in range(points_per_cycle):
+            # Evaluate points
+            for i, (lat, lon) in enumerate(cycle_coords):
                 if self._shutdown_requested:
                     break
                 
-                # Random point within bounds
-                lat = random.uniform(bounds.min_latitude, bounds.max_latitude)
-                lon = random.uniform(bounds.min_longitude, bounds.max_longitude)
-                
-                # Evaluate using scoring (synergy-based or rule-based)
-                features = self._generate_features(lat, lon)
+                features = features_list[i]
                 score = self._calculate_score(features, settings.scoring_rules, settings.use_case)
                 
                 # Update stats
@@ -197,9 +203,6 @@ class Worker:
                     "timestamp": datetime.now().isoformat()
                 })
                 points_collected += 1
-                
-                if points_collected >= max_points:
-                    break
             
             # Save batch to disk
             if batch_points:
@@ -241,16 +244,38 @@ class Worker:
             
         except Exception as e:
             log.warning(f"Real data fetch failed for ({lat}, {lon}): {e}")
+            return self._simulate_features(lat, lon)
+
+    def _generate_features_batch(self, points: List[Tuple[float, float]]) -> List[dict]:
+        """
+        Fetch real features for multiple locations using batch fetcher.
+        """
+        try:
+            from loaders.unified import get_data_fetcher
+            fetcher = get_data_fetcher()
+
+            # Fetch real data in batch
+            location_data_list = fetcher.fetch_all_batch(points, osm_radius=300)
+
+            # Convert to feature dicts
+            return [loc.to_features_dict() for loc in location_data_list]
+
+        except Exception as e:
+            log.warning(f"Real data batch fetch failed: {e}", exc_info=True)
             # Fallback to deterministic simulation if APIs fail
-            location_hash = hash((round(lat, 4), round(lon, 4)))
-            return {
-                "has_water": (location_hash % 5) == 0,
-                "has_road": (location_hash % 3) != 0,
-                "is_industrial": (location_hash % 10) < 2,
-                "is_residential": (location_hash % 10) >= 5,
-                "high_elevation": (location_hash % 20) == 0,
-                "flood_risk": False,
-            }
+            return [self._simulate_features(lat, lon) for lat, lon in points]
+
+    def _simulate_features(self, lat: float, lon: float) -> dict:
+        """Fallback deterministic simulation."""
+        location_hash = hash((round(lat, 4), round(lon, 4)))
+        return {
+            "has_water": (location_hash % 5) == 0,
+            "has_road": (location_hash % 3) != 0,
+            "is_industrial": (location_hash % 10) < 2,
+            "is_residential": (location_hash % 10) >= 5,
+            "high_elevation": (location_hash % 20) == 0,
+            "flood_risk": False,
+        }
     
     def _calculate_score(self, features: dict, rules: list, use_case: str = "general") -> float:
         """
