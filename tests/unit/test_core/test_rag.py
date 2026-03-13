@@ -76,6 +76,31 @@ class TestMockEmbedder:
         embeddings = embedder.embed_batch(["text1", "text2", "text3"])
         assert len(embeddings) == 3
 
+    def test_embed_normalization(self):
+        embedder = MockEmbedder()
+        embedding = embedder.embed("sample text for normalization test")
+        magnitude = sum(x * x for x in embedding)**0.5
+        assert pytest.approx(magnitude) == 1.0
+
+    def test_embed_case_insensitivity(self):
+        embedder = MockEmbedder()
+        e1 = embedder.embed("Hello World")
+        e2 = embedder.embed("hello world")
+        assert e1 == e2
+
+    def test_embed_different_inputs(self):
+        embedder = MockEmbedder()
+        e1 = embedder.embed("apple")
+        e2 = embedder.embed("banana")
+        assert e1 != e2
+
+    def test_embed_empty_string(self):
+        embedder = MockEmbedder(dimension=128)
+        embedding = embedder.embed("")
+        assert len(embedding) == 128
+        magnitude = sum(x * x for x in embedding)**0.5
+        assert pytest.approx(magnitude) == 1.0
+
 
 class TestSimpleVectorStore:
     """Tests for vector store."""
