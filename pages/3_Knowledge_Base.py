@@ -5,6 +5,7 @@ Knowledge Base - RAG-powered semantic search for municipal codes and organizatio
 import streamlit as st
 import json
 from core.rag import get_rag_pipeline, Document, DocumentType, SAMPLE_ZONING_CODE
+from core.theme import inject_theme
 
 # Initialize RAG Pipeline (Singleton in session state)
 if 'rag_pipeline' not in st.session_state:
@@ -27,6 +28,7 @@ st.set_page_config(
     page_icon="🧠",
     layout="wide"
 )
+inject_theme()
 
 st.title("🧠 Civic Knowledge Base")
 st.markdown("Semantic search for municipal codes, bylaws, and voting records.")

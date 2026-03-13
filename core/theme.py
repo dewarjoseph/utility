@@ -93,7 +93,7 @@ def get_page_config(title: str):
 def inject_theme():
     """Inject shared CSS into the page."""
     import streamlit as st
-    st.markdown(SHARED_CSS, unsafe_allow_html=True)
+    st.html(SHARED_CSS)
 
 def section_header(title: str, description: str = None):
     """Render a consistent section header."""
