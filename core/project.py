@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, List, Any
 from pathlib import Path
 import logging
+import concurrent.futures
 
 log = logging.getLogger(__name__)
 
@@ -419,11 +420,13 @@ class Project:
     @classmethod
     def load(cls, project_id: str) -> Optional["Project"]:
         """Load project from disk."""
-        config_path = Path("projects") / project_id / "project.json"
-        if not config_path.exists():
+        # Optimization: use os.path for faster path manipulation
+        config_path = os.path.join("projects", project_id, "project.json")
+        try:
+            with open(config_path, "r") as f:
+                return cls.from_dict(json.load(f))
+        except (FileNotFoundError, IsADirectoryError, OSError):
             return None
-        with open(config_path, "r") as f:
-            return cls.from_dict(json.load(f))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -504,7 +507,6 @@ class ProjectManager:
                             log.error(f"Failed to extract project data from {folder_path.name}: {e}")
                             return None
 
-                    import concurrent.futures
                     # Use ThreadPoolExecutor for concurrent I/O
                     with concurrent.futures.ThreadPoolExecutor() as executor:
                         results = list(executor.map(extract_project_data, project_folders))
@@ -619,12 +621,23 @@ class ProjectManager:
 
     def _list_projects_from_files(self) -> List[Project]:
         """Fallback: List all projects by reading files."""
-        projects = []
-        for folder in self.PROJECTS_DIR.iterdir():
-            if folder.is_dir():
-                project = Project.load(folder.name)
-                if project:
-                    projects.append(project)
+        try:
+            # Use os.scandir for better performance on large directories
+            project_ids = [
+                entry.name for entry in os.scandir(self.PROJECTS_DIR)
+                if entry.is_dir()
+            ]
+        except OSError:
+            return []
+
+        if not project_ids:
+            return []
+
+        # Load projects concurrently using ThreadPoolExecutor for improved I/O throughput
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = list(executor.map(Project.load, project_ids))
+
+        projects = [p for p in results if p is not None]
         return sorted(projects, key=lambda p: p.created_at, reverse=True)
     
     def get_project(self, project_id: str) -> Optional[Project]:
