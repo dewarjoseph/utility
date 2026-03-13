@@ -20,12 +20,12 @@ st.set_page_config(
 )
 
 # Hide Streamlit chrome
-st.markdown("""
+st.html("""
 <style>
     #MainMenu, header, footer, .stDeployButton {visibility: hidden; display: none;}
     .block-container { padding: 1rem 2rem; }
 </style>
-""", unsafe_allow_html=True)
+""")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # IMPORTS

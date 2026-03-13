@@ -13,6 +13,7 @@ from core.bylaws import (
 )
 from core.governance import GovernanceManager, ProposalStatus
 from core.project import ProjectManager, ProjectStatus
+from core.theme import inject_theme
 from core.deal_room import get_deal_room, DealStatus, InvestmentType, InvestorStatus
 from core.revenue_share import get_revenue_ledger
 from core.sensitivity import get_sensitivity_analyzer
@@ -35,6 +36,7 @@ st.set_page_config(
     page_icon="🏛️",
     layout="wide"
 )
+inject_theme()
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SIDEBAR

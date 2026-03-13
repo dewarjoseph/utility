@@ -9,6 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from core.project import ProjectManager, Project
 from core.governance import GovernanceManager
+from core.theme import inject_theme
 from inference.ml_engine import MLEngine
 from inference.predictor import UtilityPredictor
 
@@ -21,6 +22,7 @@ st.set_page_config(
     page_icon="🗺️",
     layout="wide"
 )
+inject_theme()
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SIDEBAR
