@@ -49,23 +49,7 @@ def benchmark_io_write(n_points=1000):
         score = 5.0
         points.append((lat, lon, features, score))
 
-    # --- METHOD 1: One-by-one (Legacy wrapper) ---
-    setup_test_env()
-
-    start_time = time.time()
-    for lat, lon, features, score in points:
-        worker._save_point(project, lat, lon, features, score)
-    end_time = time.time()
-
-    duration_single = end_time - start_time
-    print(f"Legacy 1-by-1 (via _save_point): {duration_single:.4f} seconds ({n_points/duration_single:.2f} points/sec)")
-
-    # verify file size/lines
-    with open(project.training_data_path, 'r') as f:
-        lines = len(f.readlines())
-        assert lines == n_points
-
-    # --- METHOD 2: Batched (New Implementation) ---
+    # --- METHOD: Batched (Standard Implementation) ---
     setup_test_env()
 
     # Convert to format expected by _save_points_batch
@@ -82,9 +66,6 @@ def benchmark_io_write(n_points=1000):
     with open(project.training_data_path, 'r') as f:
         lines = len(f.readlines())
         assert lines == n_points
-
-    speedup = duration_single / duration_batch
-    print(f"Speedup: {speedup:.2f}x")
 
     # Cleanup
     if os.path.exists("tests/performance/data"):
