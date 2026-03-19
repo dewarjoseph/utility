@@ -26,6 +26,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.project import Project, ProjectManager, ProjectStatus
 from core.job_queue import JobQueue, JobStatus, Job
+try:
+    from core.scoring import get_scorer, UseCase
+except ImportError:
+    get_scorer, UseCase = None, None
 
 log = logging.getLogger(__name__)
 
@@ -290,25 +294,24 @@ class Worker:
             use_case: Use-case profile name (general, desalination_plant, etc.)
         """
         # Try synergy-based scoring first
-        try:
-            from core.scoring import get_scorer, UseCase
-            
-            # Map use_case string to UseCase enum
-            use_case_map = {
-                "general": UseCase.GENERAL,
-                "desalination_plant": UseCase.DESALINATION,
-                "silicon_wafer_fab": UseCase.SILICON_FAB,
-                "warehouse_distribution": UseCase.WAREHOUSE,
-                "light_manufacturing": UseCase.MANUFACTURING,
-            }
-            uc = use_case_map.get(use_case, UseCase.GENERAL)
-            
-            scorer = get_scorer(uc)
-            return scorer.score(features)
-        except ImportError:
+        if get_scorer is not None and UseCase is not None:
+            try:
+                # Map use_case string to UseCase enum
+                use_case_map = {
+                    "general": UseCase.GENERAL,
+                    "desalination_plant": UseCase.DESALINATION,
+                    "silicon_wafer_fab": UseCase.SILICON_FAB,
+                    "warehouse_distribution": UseCase.WAREHOUSE,
+                    "light_manufacturing": UseCase.MANUFACTURING,
+                }
+                uc = use_case_map.get(use_case, UseCase.GENERAL)
+
+                scorer = get_scorer(uc)
+                return scorer.score(features)
+            except Exception as e:
+                log.warning(f"Synergy scoring failed: {e}")
+        else:
             log.debug("Synergy scorer not available, using rule-based")
-        except Exception as e:
-            log.warning(f"Synergy scoring failed: {e}")
         
         # Fall back to rule-based scoring
         base_score = 5.0  # Start at middle of 0-10 scale
