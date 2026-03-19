@@ -61,7 +61,7 @@ def test_calculate_score_fallback(mock_worker):
     """Verify score calculation falls back to rules if scorer fails."""
     features = {"has_water": True} # Rule based fallback logic
     # Make import fail
-    with patch.dict('sys.modules', {'core.scoring': None}):
+    with patch('core.worker.get_scorer', None), patch('core.worker.UseCase', None):
         score = mock_worker._calculate_score(features, [], "general")
         # Base 5.0, no rules matched
         assert score == 5.0
