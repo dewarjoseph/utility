@@ -336,19 +336,6 @@ class Worker:
         # Clamp to 0-10
         return max(0.0, min(10.0, base_score))
     
-    def _save_point(self, project: Project, lat: float, lon: float, 
-                    features: dict, score: float):
-        """
-        Save a scanned point to the project's training dataset.
-        Deprecated: Use _save_points_batch for better performance.
-        """
-        self._save_points_batch(project, [{
-            "lat": lat,
-            "lon": lon,
-            "features": features,
-            "score": score
-        }])
-
     def _save_points_batch(self, project: Project, points: list):
         """
         Save a batch of scanned points to the project's training dataset.
