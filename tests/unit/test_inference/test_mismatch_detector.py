@@ -59,3 +59,30 @@ def test_scan_quantum(detector):
     
     results = detector.scan_quantum({})
     assert len(results) >= 1
+
+def test_scan_quantum_exception_handling(detector):
+    """Verify that scan_quantum catches exceptions from individual detectors."""
+    # Force one detector to fail
+    detector.detect_slope_mismatch = MagicMock(side_effect=Exception("Simulated failure"))
+    # Force another to succeed
+    expected_mismatch = Mismatch(0.0, 0.0, "zoning", 0.7, "desc", "gis", "lidar", 0.0, 0.0)
+    detector.detect_zoning_opportunity = MagicMock(return_value=expected_mismatch)
+
+    # scan_quantum should catch the exception and still return the other mismatch
+    results = detector.scan_quantum({'lat': 0.0, 'lon': 0.0})
+
+    assert len(results) == 1
+    assert results[0].mismatch_type == "zoning"
+    detector.detect_slope_mismatch.assert_called_once()
+
+def test_detect_utility_mismatch_exception_handling(detector):
+    """Verify rules evaluation failure doesn't crash the scanning loop."""
+    # Mock analyzer to raise exception during rules evaluation
+    detector.analyzer.calculate_gross_utility_from_dict.side_effect = Exception("Rules engine error")
+
+    # This should not raise an exception when called via scan_quantum
+    results = detector.scan_quantum({'lat': 0.0, 'lon': 0.0})
+
+    # Should have no utility mismatches but the scanning loop should finish
+    for r in results:
+        assert r.mismatch_type != "utility"
