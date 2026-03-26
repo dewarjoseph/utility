@@ -171,8 +171,8 @@ class GISLoader:
                 dz_dy = (window[2, 1] - window[0, 1]) / 2.0
                 slope_rad = np.arctan(np.sqrt(dz_dx**2 + dz_dy**2))
                 return float(np.tan(slope_rad) * 100)
-        except:
-            pass
+        except Exception as e:
+            log.debug(f"Slope calculation failed: {e}")
         return 0.0
     
     def _calculate_aspect(self, row: int, col: int) -> float:
@@ -190,8 +190,8 @@ class GISLoader:
                 if aspect_deg < 0:
                     aspect_deg += 360
                 return float(aspect_deg)
-        except:
-            pass
+        except Exception as e:
+            log.debug(f"Aspect calculation failed: {e}")
         return 0.0
     
     def _mock_lidar_data(self, lat: float, lon: float) -> Dict:
